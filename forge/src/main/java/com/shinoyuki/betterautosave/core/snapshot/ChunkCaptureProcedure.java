@@ -175,7 +175,7 @@ public final class ChunkCaptureProcedure {
         ResourceLocation statusKey = BuiltInRegistries.CHUNK_STATUS.getKey(chunk.getStatus());
         String statusId = statusKey != null ? statusKey.toString() : ChunkStatus.EMPTY.toString();
 
-        SectionSnapshot[] sectionsCopy = copySections(chunk.getSections());
+        SectionSnapshot[] sectionsCopy = copySections(chunk.getSections(), level);
 
         LevelLightEngine lightEngine = level.getChunkSource().getLightEngine();
         int lightMin = lightEngine.getMinLightSection();
@@ -287,21 +287,24 @@ public final class ChunkCaptureProcedure {
      * 把活 section 的两个容器固化成快照原料。产物只喂 {@link ChunkNbtAssembler} 的 codec 编码, 故不包
      * {@code LevelChunkSection} —— 详见 {@link SectionSnapshot} 的类注释。
      */
-    private static SectionSnapshot[] copySections(LevelChunkSection[] live) {
+    private static SectionSnapshot[] copySections(LevelChunkSection[] live, ServerLevel level) {
         SectionSnapshot[] copy = new SectionSnapshot[live.length];
         for (int i = 0; i < live.length; i++) {
             LevelChunkSection original = live[i];
             PalettedContainer<BlockState> statesCopy = original.getStates().copy();
             PalettedContainerRO<Holder<Biome>> biomesRaw = original.getBiomes();
-            PalettedContainerRO<Holder<Biome>> biomesCopy;
             if (biomesRaw instanceof PalettedContainer<?> pcRaw) {
                 @SuppressWarnings("unchecked")
                 PalettedContainer<Holder<Biome>> pc = (PalettedContainer<Holder<Biome>>) pcRaw;
-                biomesCopy = pc.copy();
+                copy[i] = SectionSnapshot.ofCopiedBiomes(statesCopy, pc.copy());
             } else {
-                biomesCopy = biomesRaw;
+                // 第三方只读容器: PalettedContainerRO 接口无 copy(), 拷不出脱钩副本。直接把活引用带走会让
+                // worker 与主线程共享可变状态, 故在主线程当场编码成 NBT —— 编码产物是新分配的不可变 tag。
+                copy[i] = SectionSnapshot.ofPreEncodedBiomes(
+                        statesCopy,
+                        biomeCodec(level).encodeStart(NbtOps.INSTANCE, biomesRaw)
+                                .getOrThrow(false, LOGGER::error));
             }
-            copy[i] = new SectionSnapshot(statesCopy, biomesCopy);
         }
         return copy;
     }

@@ -1,11 +1,14 @@
 package com.shinoyuki.betterautosave.core.snapshot;
 
+import net.minecraft.core.Holder;
 import net.minecraft.nbt.NbtOps;
 import net.minecraft.nbt.Tag;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.PalettedContainer;
+import net.minecraft.world.level.chunk.PalettedContainerRO;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -13,9 +16,10 @@ import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * issue #24 回归: 用真 vanilla 容器验证 {@link SectionSnapshot} 依赖的脱钩语义。
+ * issue #24 回归: 用真 vanilla 容器验证 {@link SectionSnapshot} 依赖的脱钩语义, 以及两个工厂的字段契约。
  *
  * <p><b>分工</b>: {@code copySections} 是私有方法, 单测无法直接调 (构造真 LevelChunkSection 需要动态
  * biome 注册表)。故"生产代码确实调了两次 copy()"由 {@link ChunkCaptureSectionParityTest} 的字节码断言锁死;
@@ -71,8 +75,8 @@ class SectionSnapshotDecouplingTest {
     @Test
     void copied_snapshot_holds_still_while_aliased_snapshot_leaks() {
         PalettedContainer<BlockState> live = liveStates(20260731L);
-        SectionSnapshot copiedSnapshot = new SectionSnapshot(live.copy(), null);
-        SectionSnapshot aliasedSnapshot = new SectionSnapshot(live, null);
+        SectionSnapshot copiedSnapshot = SectionSnapshot.ofCopiedBiomes(live.copy(), null);
+        SectionSnapshot aliasedSnapshot = SectionSnapshot.ofCopiedBiomes(live, null);
 
         Tag copiedAtCapture = encode(copiedSnapshot.states());
         Tag aliasedAtCapture = encode(aliasedSnapshot.states());
@@ -90,5 +94,28 @@ class SectionSnapshotDecouplingTest {
         assertNotEquals(aliasedAtCapture, encode(aliasedSnapshot.states()),
                 "alias 快照必须跟着活容器变: 不变说明本对照实验没造成任何差异, "
                         + "上一条断言退化为恒真");
+    }
+
+    /** 常规分支不预编码 biomes, 走 worker 端 codec; 两个字段恒有且只有一个非 null。 */
+    @Test
+    void copied_biomes_branch_leaves_pre_encoded_null() {
+        PalettedContainer<BlockState> live = liveStates(1L);
+        PalettedContainerRO<Holder<Biome>> biomes = null;
+        SectionSnapshot snapshot = SectionSnapshot.ofCopiedBiomes(live.copy(), biomes);
+        assertNull(snapshot.preEncodedBiomes(),
+                "ofCopiedBiomes 分支不得预编码 biomes: 编码是 worker 的活, 挪到主线程等于把开销搬回热路径");
+    }
+
+    /** 预编码分支必须清空 biomes 引用 —— 留着活引用正是本次要堵的那个洞。 */
+    @Test
+    void pre_encoded_biomes_branch_holds_no_live_container() {
+        PalettedContainer<BlockState> live = liveStates(2L);
+        Tag encoded = encode(live);
+        SectionSnapshot snapshot = SectionSnapshot.ofPreEncodedBiomes(live.copy(), encoded);
+        assertNull(snapshot.biomes(),
+                "ofPreEncodedBiomes 分支的 biomes 必须为 null: 保留第三方只读容器的活引用 = worker 与主线程"
+                        + "共享可变状态 (issue #24 顺带修复项)");
+        assertEquals(encoded, snapshot.preEncodedBiomes(),
+                "预编码产物必须原样带到 worker");
     }
 }

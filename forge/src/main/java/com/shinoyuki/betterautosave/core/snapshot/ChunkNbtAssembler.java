@@ -10,6 +10,7 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtOps;
+import net.minecraft.nbt.Tag;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.DataLayer;
@@ -86,9 +87,14 @@ public final class ChunkNbtAssembler {
                 sectionTag.put("block_states",
                         blockStateCodec.encodeStart(NbtOps.INSTANCE, section.states())
                                 .getOrThrow(false, LOGGER::error));
-                sectionTag.put("biomes",
-                        biomeCodec.encodeStart(NbtOps.INSTANCE, section.biomes())
-                                .getOrThrow(false, LOGGER::error));
+                // preEncodedBiomes 非 null = capture 期该 section 的 biomes 是第三方只读容器, 拷不出脱钩
+                // 副本, 已在主线程编码好 (见 SectionSnapshot)。
+                Tag biomesTag = section.preEncodedBiomes();
+                if (biomesTag == null) {
+                    biomesTag = biomeCodec.encodeStart(NbtOps.INSTANCE, section.biomes())
+                            .getOrThrow(false, LOGGER::error);
+                }
+                sectionTag.put("biomes", biomesTag);
             }
             if (skyData != null) {
                 sectionTag.putByteArray("SkyLight", skyData.getData());
