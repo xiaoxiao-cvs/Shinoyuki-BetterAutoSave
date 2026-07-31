@@ -13,7 +13,6 @@ import net.minecraft.nbt.NbtOps;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.DataLayer;
-import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.PalettedContainer;
 import net.minecraft.world.level.chunk.PalettedContainerRO;
 import org.slf4j.Logger;
@@ -63,7 +62,7 @@ public final class ChunkNbtAssembler {
                 ChunkSerializerInvoker.betterautosave$makeBiomeCodec(biomeRegistry);
 
         ListTag sectionsTag = new ListTag();
-        LevelChunkSection[] sectionsCopy = snapshot.sectionsCopy();
+        SectionSnapshot[] sectionsCopy = snapshot.sectionsCopy();
         int sectionsLen = sectionsCopy.length;
         int minSection = snapshot.minSection();
         int lightMin = snapshot.lightMinSection();
@@ -83,12 +82,12 @@ public final class ChunkNbtAssembler {
 
             CompoundTag sectionTag = new CompoundTag();
             if (inChunk) {
-                LevelChunkSection section = sectionsCopy[sectionIndex];
+                SectionSnapshot section = sectionsCopy[sectionIndex];
                 sectionTag.put("block_states",
-                        blockStateCodec.encodeStart(NbtOps.INSTANCE, section.getStates())
+                        blockStateCodec.encodeStart(NbtOps.INSTANCE, section.states())
                                 .getOrThrow(false, LOGGER::error));
                 sectionTag.put("biomes",
-                        biomeCodec.encodeStart(NbtOps.INSTANCE, section.getBiomes())
+                        biomeCodec.encodeStart(NbtOps.INSTANCE, section.biomes())
                                 .getOrThrow(false, LOGGER::error));
             }
             if (skyData != null) {

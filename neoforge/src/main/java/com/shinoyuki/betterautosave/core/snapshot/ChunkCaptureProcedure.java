@@ -25,6 +25,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.DataLayer;
@@ -160,6 +161,15 @@ public final class ChunkCaptureProcedure {
         ServerThreadAssert.assertOnServerThread(level.getServer());
 
         ChunkPos pos = chunk.getPos();
+
+        // FULL 档在此直接短路: ChunkSerializer.write 内部自己采集 sections / 光照 / heightmap / 方块实体 /
+        // structures, 下面那一整段取材的产物在 FULL 下无人消费 (assembler 见 preBuiltFullTag 非 null 即直接
+        // 返回), 先采后废等于每次存盘白做一遍。
+        if (mode == ConfigSpec.EventCompatMode.FULL) {
+            return ChunkSnapshot.ofPrebuiltFullTag(
+                    pos, level.dimension(), ChunkSerializer.write(level, chunk), captured, state, mode);
+        }
+
         int dataVersion = SharedConstants.getCurrentVersion().getDataVersion().getVersion();
         int minSection = chunk.getMinSection();
         long lastUpdate = level.getGameTime();
@@ -167,7 +177,7 @@ public final class ChunkCaptureProcedure {
         ResourceLocation statusKey = BuiltInRegistries.CHUNK_STATUS.getKey(chunk.getPersistedStatus());
         String statusId = statusKey != null ? statusKey.toString() : ChunkStatus.EMPTY.toString();
 
-        LevelChunkSection[] sectionsCopy = copySections(chunk.getSections());
+        SectionSnapshot[] sectionsCopy = copySections(chunk.getSections());
 
         LevelLightEngine lightEngine = level.getChunkSource().getLightEngine();
         int lightMin = lightEngine.getMinLightSection();
@@ -217,45 +227,38 @@ public final class ChunkCaptureProcedure {
 
         boolean isLightOn = chunk.isLightCorrect();
 
-        CompoundTag preBuiltCoreTag = null;
-        CompoundTag preBuiltFullTag = null;
-
-        if (mode == ConfigSpec.EventCompatMode.FULL) {
-            preBuiltFullTag = ChunkSerializer.write(level, chunk);
-        } else {
-            // NeoForge: chunk 数据附件 + LevelChunk 自定义光 (aux light) 必须在主线程取 (触 registries 与活跃状态),
-            // 复刻 1.21.1 vanilla ChunkSerializer.write 的同名字段。手拼 core tag 漏这两字段会让依赖 NeoForge
-            // 数据附件的 mod 在异步存档时静默丢数据 (1.20.1 Forge 无此字段, 是 NeoForge 端口新增的落盘契约)。
-            Tag auxLightTag = chunk.getAuxLightManager(pos).serializeNBT(level.registryAccess());
-            CompoundTag attachmentsTag;
-            try {
-                attachmentsTag = chunk.writeAttachmentsToNBT(level.registryAccess());
-            } catch (Exception e) {
-                LOGGER.error("[BetterAutoSave] chunk {} 数据附件写出抛异常, 本次存档不含附件 (附件序列化故障, 请联系对应 mod 作者)", pos, e);
-                attachmentsTag = null;
-            }
-            preBuiltCoreTag = buildCoreTag(
-                    level,
-                    pos,
-                    dataVersion,
-                    minSection,
-                    lastUpdate,
-                    inhabitedTime,
-                    statusId,
-                    isLightOn,
-                    blockEntitiesNbt,
-                    heightmapsRaw,
-                    structureContext,
-                    structureStarts,
-                    structureRefs,
-                    ticks,
-                    postProcessing,
-                    upgradeData,
-                    blendingData,
-                    belowZeroRetrogen,
-                    auxLightTag,
-                    attachmentsTag);
+        // NeoForge: chunk 数据附件 + LevelChunk 自定义光 (aux light) 必须在主线程取 (触 registries 与活跃状态),
+        // 复刻 1.21.1 vanilla ChunkSerializer.write 的同名字段。手拼 core tag 漏这两字段会让依赖 NeoForge
+        // 数据附件的 mod 在异步存档时静默丢数据 (1.20.1 Forge 无此字段, 是 NeoForge 端口新增的落盘契约)。
+        Tag auxLightTag = chunk.getAuxLightManager(pos).serializeNBT(level.registryAccess());
+        CompoundTag attachmentsTag;
+        try {
+            attachmentsTag = chunk.writeAttachmentsToNBT(level.registryAccess());
+        } catch (Exception e) {
+            LOGGER.error("[BetterAutoSave] chunk {} 数据附件写出抛异常, 本次存档不含附件 (附件序列化故障, 请联系对应 mod 作者)", pos, e);
+            attachmentsTag = null;
         }
+        CompoundTag preBuiltCoreTag = buildCoreTag(
+                level,
+                pos,
+                dataVersion,
+                minSection,
+                lastUpdate,
+                inhabitedTime,
+                statusId,
+                isLightOn,
+                blockEntitiesNbt,
+                heightmapsRaw,
+                structureContext,
+                structureStarts,
+                structureRefs,
+                ticks,
+                postProcessing,
+                upgradeData,
+                blendingData,
+                belowZeroRetrogen,
+                auxLightTag,
+                attachmentsTag);
 
         return new ChunkSnapshot(
                 pos,
@@ -284,15 +287,19 @@ public final class ChunkCaptureProcedure {
                 captured,
                 state,
                 preBuiltCoreTag,
-                preBuiltFullTag,
+                null,
                 mode);
     }
 
-    private static LevelChunkSection[] copySections(LevelChunkSection[] live) {
-        LevelChunkSection[] copy = new LevelChunkSection[live.length];
+    /**
+     * 把活 section 的两个容器固化成快照原料。产物只喂 {@link ChunkNbtAssembler} 的 codec 编码, 故不包
+     * {@code LevelChunkSection} —— 详见 {@link SectionSnapshot} 的类注释。
+     */
+    private static SectionSnapshot[] copySections(LevelChunkSection[] live) {
+        SectionSnapshot[] copy = new SectionSnapshot[live.length];
         for (int i = 0; i < live.length; i++) {
             LevelChunkSection original = live[i];
-            PalettedContainer<net.minecraft.world.level.block.state.BlockState> statesCopy = original.getStates().copy();
+            PalettedContainer<BlockState> statesCopy = original.getStates().copy();
             PalettedContainerRO<Holder<Biome>> biomesRaw = original.getBiomes();
             PalettedContainerRO<Holder<Biome>> biomesCopy;
             if (biomesRaw instanceof PalettedContainer<?> pcRaw) {
@@ -302,7 +309,7 @@ public final class ChunkCaptureProcedure {
             } else {
                 biomesCopy = biomesRaw;
             }
-            copy[i] = new LevelChunkSection(statesCopy, biomesCopy);
+            copy[i] = new SectionSnapshot(statesCopy, biomesCopy);
         }
         return copy;
     }

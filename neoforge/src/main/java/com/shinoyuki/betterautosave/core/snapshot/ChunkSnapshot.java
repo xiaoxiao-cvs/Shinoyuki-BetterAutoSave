@@ -12,7 +12,6 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.DataLayer;
-import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.UpgradeData;
 import net.minecraft.world.level.levelgen.BelowZeroRetrogen;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -36,7 +35,7 @@ public record ChunkSnapshot(
         long lastUpdate,
         long inhabitedTime,
         String statusId,
-        LevelChunkSection[] sectionsCopy,
+        SectionSnapshot[] sectionsCopy,
         DataLayer[] skyLights,
         DataLayer[] blockLights,
         int lightMinSection,
@@ -60,8 +59,12 @@ public record ChunkSnapshot(
 ) implements CapturedSnapshot {
 
     /**
-     * v0.1 兼容入口: 主线程已经通过 ChunkSerializer.write 构好完整 tag,
-     * 仅 worker 端做 IO。等 v0.2 capture procedure 全量接通后此方法被替换。
+     * 主线程已通过 {@code ChunkSerializer.write} 构好完整 tag 时的快照入口 (FULL 档)。
+     *
+     * <p>除 pos / dimension / capturedGeneration / state / preBuiltFullTag 外的全部取材字段一律留空:
+     * {@code ChunkSerializer.write} 内部自己采集 sections、光照、heightmap、方块实体与 structures, 主线程
+     * 再采一遍纯属重复; 而 {@link ChunkNbtAssembler#assemble} 见 preBuiltFullTag 非 null 即直接返回, 落盘
+     * 链路 (含 IO 重试与 pending 接力) 从不读这些字段。
      */
     public static ChunkSnapshot ofPrebuiltFullTag(
             ChunkPos pos,
