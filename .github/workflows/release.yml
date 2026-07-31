@@ -145,8 +145,12 @@ jobs:
       # 标签, 该版本会同时出现在 "NeoForge 1.21.1" 与 "Forge 1.20.1" 等所有 加载器×MC 组合下 (含
       # 不存在的 Forge 1.21.1 / NeoForge 1.20.1), 且 primary 恒为首个文件 (forge -all.jar) —— NeoForge
       # 1.21.1 用户过滤后默认下到 Forge 1.20.1 jar, FML 报 "需要 forge/1.20.1", 即用户所见的 "不兼容
-      # neoforge" (与补丁号无关)。故一端一版, 各自单文件即自身 primary; 版本号加 +forge / +neoforge
-      # 后缀满足 Modrinth 版本号唯一性 (build metadata, 不影响排序)。
+      # neoforge" (与补丁号无关)。故一端一版, 各自单文件即自身 primary; 版本号加 -forge / -neoforge
+      # 后缀满足 Modrinth 版本号唯一性。
+      # 后缀用连字符而非加号: 二者都只是 Modrinth 侧的版本号字符串 (mods.toml 内部版本恒为裸版本号,
+      # 不带后缀)。严格按 semver, 连字符是预发布标识 (0.17.0-forge 排在 0.17.0 之前), 加号才是被比较
+      # 忽略的 build metadata; 此处无碍, 因为发布通道由下面的 version-type 显式指定, 且本项目从不发
+      # 裸版本号那一版, 不存在被压一档的对象。0.16.3 及更早已发布的 +forge / +neoforge 版本保持原样。
       # version-type 跟随 prerelease 勾选: 预发布 -> beta 通道, 正式 -> release 通道。
       # env.MODRINTH_TOKEN 为空时整步跳过 (fork 或未配 secret 不会让发版失败)。
       # Modrinth 面向国际用户, changelog 用英文 .en.md (GitHub release 正文仍用中文 .md)。
@@ -160,7 +164,7 @@ jobs:
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
           files: ${{ steps.jar.outputs.forge_path }}
           name: BetterAutoSave ${{ steps.version.outputs.tag }} (Forge 1.20.1)
-          version: ${{ steps.version.outputs.version }}+forge
+          version: ${{ steps.version.outputs.version }}-forge
           version-type: ${{ inputs.prerelease && 'beta' || 'release' }}
           changelog-file: release-notes/${{ steps.version.outputs.tag }}.en.md
           loaders: forge
@@ -176,7 +180,7 @@ jobs:
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
           files: ${{ steps.jar.outputs.neoforge_path }}
           name: BetterAutoSave ${{ steps.version.outputs.tag }} (NeoForge 1.21.1)
-          version: ${{ steps.version.outputs.version }}+neoforge
+          version: ${{ steps.version.outputs.version }}-neoforge
           version-type: ${{ inputs.prerelease && 'beta' || 'release' }}
           changelog-file: release-notes/${{ steps.version.outputs.tag }}.en.md
           loaders: neoforge
