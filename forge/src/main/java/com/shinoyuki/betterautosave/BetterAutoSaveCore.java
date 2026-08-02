@@ -1,6 +1,7 @@
 package com.shinoyuki.betterautosave;
 
 import com.shinoyuki.betterautosave.core.io.AsyncIoBridge;
+import com.shinoyuki.betterautosave.core.leveldat.RegistryTagCache;
 import com.shinoyuki.betterautosave.core.scheduler.SaveScheduler;
 import com.shinoyuki.betterautosave.core.snapshot.SnapshotPipeline;
 import com.shinoyuki.betterautosave.diagnostic.ChunkLatencyTracker;
@@ -17,6 +18,7 @@ public final class BetterAutoSaveCore {
     private static volatile DiagnosticLogger DIAGNOSTIC_LOGGER;
     private static volatile PrometheusExporter EXPORTER;
     private static volatile ChunkLatencyTracker LATENCY_TRACKER;
+    private static volatile RegistryTagCache REGISTRY_TAG_CACHE;
 
     public static void install(SaveMetrics metrics,
                                SaveScheduler scheduler,
@@ -38,6 +40,20 @@ public final class BetterAutoSaveCore {
         DIAGNOSTIC_LOGGER = null;
         EXPORTER = null;
         LATENCY_TRACKER = null;
+        REGISTRY_TAG_CACHE = null;
+    }
+
+    /**
+     * issue #25: level.dat 注册表快照缓存. 绑定 MinecraftServer 生命周期 (install/uninstall),
+     * 使 ForgeHooksLevelSaveMixin 只在"服务器已起且未关"的窗口内介入 —— 服务器开始 tick 前
+     * (net.minecraft.server.Main 的预写) 与客户端 world-optimize 线程上的写盘都恒为 null, 自动放行 vanilla.
+     */
+    public static void setRegistryTagCache(RegistryTagCache cache) {
+        REGISTRY_TAG_CACHE = cache;
+    }
+
+    public static RegistryTagCache registryTagCache() {
+        return REGISTRY_TAG_CACHE;
     }
 
     /**

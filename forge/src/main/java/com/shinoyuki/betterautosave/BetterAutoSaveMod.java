@@ -6,6 +6,7 @@ import com.shinoyuki.betterautosave.command.BetterAutoSaveCommand;
 import com.shinoyuki.betterautosave.config.ConfigSpec;
 import com.shinoyuki.betterautosave.core.dispatch.SaveDispatcher;
 import com.shinoyuki.betterautosave.core.io.AsyncIoBridge;
+import com.shinoyuki.betterautosave.core.leveldat.RegistryTagCache;
 import com.shinoyuki.betterautosave.core.scheduler.SaveScheduler;
 import com.shinoyuki.betterautosave.core.snapshot.SnapshotPipeline;
 import com.shinoyuki.betterautosave.diagnostic.ChunkLatencyTracker;
@@ -24,6 +25,7 @@ import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import net.minecraftforge.fml.loading.FMLPaths;
+import net.minecraftforge.registries.IdMappingEvent;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -80,6 +82,11 @@ public final class BetterAutoSaveMod {
 
         BetterAutoSaveCore.install(metrics, scheduler, pipeline, ioBridge, diagnosticLogger);
         BetterAutoSaveCore.setLatencyTracker(latencyTracker);
+        // issue #25: level.dat 注册表快照缓存. 必须晚于 install 才可见 (mixin 以 cache != null 作为
+        // "服务器已起"的唯一判据), 且随 uninstall 一并置空, 保证客户端"连远程服 -> 退回单人"时
+        // 上一轮的缓存不会跨 server 实例复用。
+        BetterAutoSaveCore.setRegistryTagCache(
+                RegistryTagCache.production(BetterAutoSaveConfig::levelDataRegistryCacheRevalidateCycles));
         LOGGER.info("[BetterAutoSave]   |- workers: chunk={} entity={}",
                 BetterAutoSaveConfig.workerThreads(), BetterAutoSaveConfig.entityWorkerThreads());
         LOGGER.info("[BetterAutoSave]   |- throttle: base={}/tick adaptive={} guard={}s",
@@ -90,6 +97,9 @@ public final class BetterAutoSaveMod {
         LOGGER.info("[BetterAutoSave]   |- async load: enabled={} mode={} workers={}",
                 BetterAutoSaveConfig.loadEnabled(), BetterAutoSaveConfig.loadEventCompatMode(),
                 BetterAutoSaveConfig.loadWorkerThreads());
+        LOGGER.info("[BetterAutoSave]   |- level.dat registry cache: enabled={} revalidateCycles={}",
+                BetterAutoSaveConfig.levelDataCacheRegistrySnapshot(),
+                BetterAutoSaveConfig.levelDataRegistryCacheRevalidateCycles());
         LOGGER.info("[BetterAutoSave]   `- config: {}/{}/common.toml", SERIES_CONFIG_DIR, MOD_ID);
         if (BetterAutoSaveConfig.eventCompatMode() == ConfigSpec.EventCompatMode.DISABLED) {
             LOGGER.warn("[BetterAutoSave] eventCompatMode=DISABLED: ChunkDataEvent.Save listeners will NOT fire. "
@@ -133,6 +143,22 @@ public final class BetterAutoSaveMod {
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
         BetterAutoSaveCommand.register(event.getDispatcher());
+    }
+
+    /**
+     * issue #25 第一层失效: Forge 在 ID 映射可能变化时发本事件, 覆盖 GameData 的全部三条官方路径
+     * (freezeData / revertTo / injectSnapshot). 收到即丢弃 level.dat 注册表快照缓存,
+     * 下次写盘重建。
+     *
+     * <p>本监听恒注册, 不看 levelData.cacheRegistrySnapshot 开关: 配置可热重载, 若只在开启时才
+     * 订阅, 那么"关 -> 发生 ID 变更 -> 再开"这条时序会让陈旧缓存复活。缓存为空时 invalidate 是 no-op。
+     */
+    @SubscribeEvent
+    public void onIdMapping(IdMappingEvent event) {
+        RegistryTagCache cache = BetterAutoSaveCore.registryTagCache();
+        if (cache != null) {
+            cache.invalidate("IdMappingEvent (frozen=" + event.isFrozen() + ")");
+        }
     }
 
     @SubscribeEvent

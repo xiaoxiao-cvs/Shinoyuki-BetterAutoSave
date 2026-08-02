@@ -25,6 +25,8 @@ public final class BetterAutoSaveConfig {
     private static volatile int maxRetries;
     private static volatile int savedDataMaxFileSizeMB;
     private static volatile ConfigSpec.EventCompatMode eventCompatMode;
+    private static volatile boolean levelDataCacheRegistrySnapshot;
+    private static volatile int levelDataRegistryCacheRevalidateCycles;
     private static volatile boolean diagnosticLogging;
     private static volatile int diagnosticLogIntervalTicks;
     private static volatile boolean prometheusEnabled;
@@ -101,6 +103,14 @@ public final class BetterAutoSaveConfig {
         return eventCompatMode;
     }
 
+    public static boolean levelDataCacheRegistrySnapshot() {
+        return levelDataCacheRegistrySnapshot;
+    }
+
+    public static int levelDataRegistryCacheRevalidateCycles() {
+        return levelDataRegistryCacheRevalidateCycles;
+    }
+
     public static boolean diagnosticLogging() {
         return diagnosticLogging;
     }
@@ -159,6 +169,8 @@ public final class BetterAutoSaveConfig {
         maxRetries = ConfigSpec.MAX_RETRIES.get();
         savedDataMaxFileSizeMB = ConfigSpec.SAVED_DATA_MAX_FILE_SIZE_MB.get();
         eventCompatMode = ConfigSpec.EVENT_COMPAT_MODE.get();
+        levelDataCacheRegistrySnapshot = ConfigSpec.LEVEL_DATA_CACHE_REGISTRY_SNAPSHOT.get();
+        levelDataRegistryCacheRevalidateCycles = ConfigSpec.LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES.get();
         diagnosticLogging = ConfigSpec.DIAGNOSTIC_LOGGING.get();
         diagnosticLogIntervalTicks = ConfigSpec.DIAGNOSTIC_LOG_INTERVAL_TICKS.get();
         prometheusEnabled = ConfigSpec.PROMETHEUS_ENABLED.get();

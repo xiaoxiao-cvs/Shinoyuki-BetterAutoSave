@@ -34,6 +34,8 @@ public final class ConfigSpec {
     public static final ForgeConfigSpec.IntValue MAX_RETRIES;
     public static final ForgeConfigSpec.IntValue SAVED_DATA_MAX_FILE_SIZE_MB;
     public static final ForgeConfigSpec.EnumValue<EventCompatMode> EVENT_COMPAT_MODE;
+    public static final ForgeConfigSpec.BooleanValue LEVEL_DATA_CACHE_REGISTRY_SNAPSHOT;
+    public static final ForgeConfigSpec.IntValue LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES;
     public static final ForgeConfigSpec.BooleanValue LOAD_ENABLED;
     public static final ForgeConfigSpec.EnumValue<LoadCompatMode> LOAD_EVENT_COMPAT_MODE;
     public static final ForgeConfigSpec.IntValue LOAD_MAX_RETRIES;
@@ -152,6 +154,59 @@ public final class ConfigSpec {
                          "  bypassed and that data silently dropped every save, with no error. Flip to FULL if you run such a mod",
                          "  (FULL invokes the real write()).")
                 .defineEnum("eventCompatMode", EventCompatMode.PARTIAL);
+
+        BUILDER.pop();
+
+        BUILDER.comment("level.dat write optimization (issue #25)").push("levelData");
+
+        LEVEL_DATA_CACHE_REGISTRY_SNAPSHOT = BUILDER
+                .comment("Reuse a cached copy of the Forge registry ID table that gets written into level.dat,",
+                         "instead of rebuilding it from scratch on every autosave.",
+                         "",
+                         "WHAT THIS FIXES: vanilla rewrites level.dat unconditionally every autosave (default every",
+                         "5 minutes). On a heavily modded server almost all of that file is the Forge registry ID table.",
+                         "Measured on a 137-mod 1.20.1 server: level.dat is 1,234,370 bytes uncompressed, of which",
+                         "fml/Registries is 1,215,091 bytes (98.4%, 17 registries / 26,648 ids). Rebuilding it costs",
+                         "about 25ms of main-thread time per autosave, which shows up as a periodic MSPT spike.",
+                         "Diffing two consecutive level.dat files 5 minutes apart showed 5 differing bytes out of",
+                         "1,234,370 - all in /Data; the entire /fml block was byte-identical.",
+                         "",
+                         "WHY IT IS SAFE: on a dedicated server the ACTIVE registry set is fixed once the server starts",
+                         "ticking (registry writes are rejected while locked, and datapack /reload uses a different",
+                         "container). The cache is additionally invalidated by three independent layers: Forge's",
+                         "IdMappingEvent, a per-write fingerprint of every persisted registry (entry count + locked",
+                         "state), and the periodic full recompute below.",
+                         "",
+                         "Default false: opt-in. The gain is a periodic ~25ms main-thread spike, not a throughput",
+                         "problem, so this ships off until it has been proven on real modpacks. Turn it on together",
+                         "with a non-zero revalidate interval, watch the log for MISMATCH, then leave it on.",
+                         "Hot-reloadable: no restart needed, and turning it off drops the cache immediately.",
+                         "",
+                         "COMPAT WARNING: when the cache hits, ForgeHooks.writeAdditionalLevelSaveData is skipped",
+                         "entirely, so any other mod injecting into that method is skipped too. No such mod is known",
+                         "(the method is @ApiStatus.Internal with a single caller), and the cached content already",
+                         "includes whatever such a mod contributed on the build pass, so a constant contribution is",
+                         "equivalent. A time-varying one would be reported by the revalidation below as a MISMATCH.",
+                         "",
+                         "NeoForge note: this setting does not exist on the NeoForge build - NeoForge removed the",
+                         "registry ID table from level.dat entirely, so there is nothing to cache there.")
+                .define("cacheRegistrySnapshot", false);
+
+        LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES = BUILDER
+                .comment("How many cache hits to serve before forcing one full rebuild and comparing it against the",
+                         "cached copy, tag by tag. A mismatch logs an ERROR and the freshly computed value is used.",
+                         "",
+                         "This costs exactly as much as not caching for that one autosave, and buys the only real",
+                         "proof that the cached table is still correct on YOUR modpack: the other two invalidation",
+                         "layers can only catch registry changes that go through Forge's own events or that change a",
+                         "registry's entry count, and cannot see a mod that swaps IDs in place after calling the",
+                         "public ForgeRegistry.unfreeze().",
+                         "",
+                         "Default 12: with the vanilla 5-minute autosave that is one verified rebuild per hour,",
+                         "so 11 of every 12 autosaves are cheap. Set 1 to verify every single write (no speedup,",
+                         "pure audit mode - useful for a few days when first enabling on a new modpack).",
+                         "Set 0 to never revalidate: only do that once you have run for a long time with no MISMATCH.")
+                .defineInRange("registryCacheRevalidateCycles", 12, 0, 1000);
 
         BUILDER.pop();
 

@@ -13,6 +13,7 @@
     "ChunkSerializerLoadMixin",
     "DimensionDataStorageMixin",
     "EntityStorageMixin",
+    "ForgeHooksLevelSaveMixin",
     "LevelChunkCapsLoadMixin",
     "MinecraftServerMixin",
     "SavedDataMixin",

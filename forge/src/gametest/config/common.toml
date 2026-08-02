@@ -5,6 +5,13 @@
 [general]
 	enabled = true
 
+# issue #25 的 level.dat 注册表缓存在 GameTest 里开启, 让 CI 顺带冒烟覆盖 ForgeHooksLevelSaveMixin:
+# 该 mixin 走 defaultRequire=1, 注入点失配会在启动期硬崩, 跑通即证明两处注入都挂上了。
+# revalidateCycles=1 = 每次命中后都强制重算比对, 存盘次数少也能撞上对拍分支。
+[levelData]
+	cacheRegistrySnapshot = true
+	registryCacheRevalidateCycles = 1
+
 [load]
 	enabled = true
 	loadEventCompatMode = "PARTIAL"

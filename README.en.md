@@ -90,6 +90,34 @@ When unsure, stay on PARTIAL.
 
 > Note: under PARTIAL/DISABLED, BAS assembles sections itself and never calls vanilla `ChunkSerializer.write`. If a mod injects custom chunk data by mixing into `ChunkSerializer.write` directly (rather than via `ChunkDataEvent.Save` or Forge capabilities — both still honored under PARTIAL), its serialization is bypassed and that data is silently dropped on every save with no error. Switch to FULL if you run such a mod.
 
+### level.dat registry cache (experimental, off by default, Forge build only)
+
+On a heavily modded server, a spark MSPT graph will usually show **an evenly spaced spike every 5 minutes**, even with nobody online. That is not chunk saving — it is vanilla unconditionally rewriting `level.dat` on every autosave. Once you have a lot of mods, almost all of that file is Forge's registry ID table, and it is rebuilt from scratch and re-compressed every single time.
+
+Measured on a 137-mod 1.20.1 production server:
+
+| Item | Measured |
+|---|---|
+| level.dat, uncompressed | 1,234,370 bytes |
+| of which the registry ID table (`fml/Registries`) | 1,215,091 bytes (**98.4%**, 17 registries / 26,648 ids) |
+| Byte-diff of two level.dat files 5 minutes apart | only **5 bytes** differ, all in the world-data section; the 1.22 MB registry block is **byte-identical** |
+| Main-thread cost of rebuilding that table | roughly 25ms per autosave |
+
+In other words, the thing being recomputed every 5 minutes comes out identical to last time. With this option on, BAS caches it and reuses it.
+
+| Field | Default | Meaning |
+|---|---|---|
+| levelData.cacheRegistrySnapshot | false | Master switch. Hot-reloadable; turning it off drops the cache immediately |
+| levelData.registryCacheRevalidateCycles | 12 | After this many cache hits, force one full rebuild and compare it against the cache tag by tag. A mismatch logs an ERROR and the freshly computed value is used. 12 is roughly one verification per hour |
+
+**Off by default on purpose.** What this saves is a periodic ~25ms main-thread spike, not a throughput problem — TPS usually does not drop at all. So it ships opt-in until it has been proven on real modpacks. Recommended way to enable it: set `registryCacheRevalidateCycles` to `1` first (verify on every write — no speedup, pure audit mode), run for a few days and confirm no `MISMATCH` appears in the log, then set it back to `12` to collect the benefit.
+
+Three independent layers invalidate the cache, any one of which triggers a rebuild: Forge's `IdMappingEvent`, a per-write fingerprint of every persisted registry (entry count plus locked state), and the periodic full recompute above.
+
+> Note: on a cache hit, the whole of `ForgeHooks.writeAdditionalLevelSaveData` is skipped, so any other mod injecting into that method is skipped too. No such mod is known (the method is `@ApiStatus.Internal` with a single caller), and the cached content already includes whatever such a mod contributed on the build pass, so a constant contribution is equivalent. A time-varying one would be reported by the periodic comparison as a `MISMATCH`. If you see `MISMATCH`, turn this off and file an issue.
+
+> NeoForge note: this option does not exist on the NeoForge build. NeoForge removed the registry ID table from `level.dat` upstream, so there is nothing to cache and no such spike.
+
 ### Async chunk loading (experimental, off by default)
 
 > Back up your entire world folder before enabling this. It is experimental and changes the chunk *loading* path — moving the step that parses save bytes into game objects (deserialization) onto background threads. By design, even if background parsing fails it falls back to re-reading the same bytes on the main thread and loses no data; but any feature that touches the loading path may hit an edge case not covered under your specific mod combination. Backing up first is taking responsibility for your own saves.
