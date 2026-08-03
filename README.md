@@ -100,6 +100,7 @@ BAS 让主线程只做快照——把区块当前的方块、光照、方块实�
 |---|---|---|
 | playerData.loadFallback | true | 玩家存档读不出来时，先隔离损坏件再从 `.dat_old` 恢复，而不是让他以新号上线 |
 | playerData.atomicSidecarWrite | true | 成就与统计改成「先写临时文件再原子替换」，并留一份 `.bak` |
+| playerData.sidecarFsync | false | 上一项额外做一次同步刷盘。代价落在主线程且按在线人数放大（60 人一次自动保存 120 次），原版这条路径上没有任何 fsync，ext4 默认模式也已隐含该顺序，故默认关闭 |
 | playerData.advancementsSkipMode | OFF | 成就没变化时跳过重写。见下 |
 | playerData.advancementsForceFullWriteCycles | 12 | 连续跳过多少次后强制全量写一次 |
 | playerData.staggerMaxPerTick | 0 | 每游戏刻最多存几个玩家，0 = 关闭（原版行为，一刻写完所有人） |

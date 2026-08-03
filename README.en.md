@@ -100,6 +100,7 @@ On a heavily modded server, the autosave tick writes three files per online play
 |---|---|---|
 | playerData.loadFallback | true | When a player's save cannot be read, quarantine it and recover from `.dat_old` instead of letting them join as a brand new player |
 | playerData.atomicSidecarWrite | true | Write advancements and stats through a temp file and an atomic rename, keeping one `.bak` |
+| playerData.sidecarFsync | false | Also fsync those writes. The cost lands on the main thread and scales with player count (120 flushes per autosave at 60 players); vanilla does no fsync on this path and ext4's default mode already implies the ordering, so this ships off |
 | playerData.advancementsSkipMode | OFF | Skip rewriting advancements when nothing changed. See below |
 | playerData.advancementsForceFullWriteCycles | 12 | Force one full write after this many consecutive skips |
 | playerData.staggerMaxPerTick | 0 | Players written per tick; 0 = vanilla behavior (everyone in one tick) |
