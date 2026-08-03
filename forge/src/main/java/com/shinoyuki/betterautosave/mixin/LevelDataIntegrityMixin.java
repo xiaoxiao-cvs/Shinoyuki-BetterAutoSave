@@ -46,6 +46,9 @@ public abstract class LevelDataIntegrityMixin {
 
     @Inject(method = "readAdditionalLevelSaveData", at = @At("HEAD"), remap = false)
     private void betterautosave$verifyAndBackup(CallbackInfo ci) {
+        if (!BetterAutoSaveConfig.enabled()) {
+            return;
+        }
         boolean verify = BetterAutoSaveConfig.levelDataVerifyOnStartup();
         boolean backup = BetterAutoSaveConfig.levelDataStartupBackup();
         if (!verify && !backup) {

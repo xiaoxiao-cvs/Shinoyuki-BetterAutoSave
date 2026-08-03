@@ -114,6 +114,41 @@ public final class LevelDataIntegrity {
         return new Result(Verdict.OK, true, "checksum ok");
     }
 
+    /**
+     * 带重试的写后回读校验。
+     *
+     * <p><b>为什么必须重试</b>: 校验跑在 worker 上, 何时被取出执行不受控 (SavedData 队列可能因某个
+     * 超大 SavedData 积压数秒)。而 vanilla 写 level.dat 走的
+     * {@code Util.safeReplaceFile} 中间有一段 <b>level.dat 不存在</b>的窗口:
+     * <pre>
+     * deleteIfExists(level.dat_old) -&gt; move(level.dat -&gt; level.dat_old)
+     *                               -&gt; deleteIfExists(level.dat) -&gt; move(tmp -&gt; level.dat)
+     * </pre>
+     * 实测该窗口约 2ms。worker 若恰好在窗口里回读, 单次判定会得到 MISSING (或落进 gzip 打开阶段
+     * 得到 UNREADABLE), 于是打出一条 FATAL 级、指示运维停服回滚的告警 —— 而世界完全健康。
+     * 让运维在健康世界上做破坏性回滚, 比漏报一次更糟。
+     *
+     * <p>重试只在判定为**不可用**时发生, 通过路径零额外成本。真损坏的文件重试多少次都还是坏的,
+     * 所以这不削弱检出能力, 只把那个几毫秒的换名窗口排除掉。
+     *
+     * @param attempts 总尝试次数 (至少 1)
+     * @param delayMs  两次尝试之间的间隔; 线程被中断时立即返回当前结果并复位中断标志
+     */
+    public static Result verifyAfterWriteWithRetry(Path levelDat, VerifyStrength strength,
+                                                   int attempts, long delayMs) {
+        Result result = verifyAfterWrite(levelDat, strength);
+        for (int i = 1; i < attempts && !result.usable(); i++) {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return result;
+            }
+            result = verifyAfterWrite(levelDat, strength);
+        }
+        return result;
+    }
+
     /** 逐层校验一个 level.dat。分层判据见类注释。 */
     public static Result verify(Path levelDat) {
         if (levelDat == null || !Files.isRegularFile(levelDat)) {

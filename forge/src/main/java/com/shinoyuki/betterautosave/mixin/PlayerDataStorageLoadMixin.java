@@ -55,7 +55,7 @@ public abstract class PlayerDataStorageLoadMixin {
 
     @Inject(method = "load", at = @At("HEAD"))
     private void betterautosave$restoreMissingPrimary(Player player, CallbackInfoReturnable<CompoundTag> cir) {
-        if (!BetterAutoSaveConfig.playerDataLoadFallback()) {
+        if (!BetterAutoSaveConfig.enabled() || !BetterAutoSaveConfig.playerDataLoadFallback()) {
             return;
         }
         PlayerDataRecovery.restoreMissingPrimary(playerDir, player.getStringUUID(),
@@ -64,7 +64,7 @@ public abstract class PlayerDataStorageLoadMixin {
 
     @Inject(method = "load", at = @At("RETURN"), cancellable = true)
     private void betterautosave$recoverUnreadablePrimary(Player player, CallbackInfoReturnable<CompoundTag> cir) {
-        if (!BetterAutoSaveConfig.playerDataLoadFallback()) {
+        if (!BetterAutoSaveConfig.enabled() || !BetterAutoSaveConfig.playerDataLoadFallback()) {
             return;
         }
         if (cir.getReturnValue() != null) {

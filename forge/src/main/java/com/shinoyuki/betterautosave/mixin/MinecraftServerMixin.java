@@ -55,6 +55,15 @@ public abstract class MinecraftServerMixin {
      */
     @Inject(method = "stopServer", at = @At("HEAD"))
     private void betterautosave$enterShutdownModeOnCrashPath(CallbackInfo ci) {
+        // autosave 窗口标志必须在这里强制复位。saveEverything 是 try/finally 结构且只有一条
+        // IRETURN, 异常路径走 finally 的 athrow, @At("RETURN") 不触发 —— 某个 mod 在
+        // saveAllChunks 里抛异常就会让标志永久停在 true。stopServer 内紧接着的
+        // playerList.saveAll() 读到 true 就只写 staggerMaxPerTick 个人然后 cancel, 而此后
+        // 再没有 tick 来消化队列, 其余在线玩家的存档回退到上一次 autosave。
+        // 后面的 removeAll() 补不回来: 它内联执行的 Connection.handleDisconnection 对仍打开的
+        // channel 直接 no-op, 走不到 PlayerList.remove 的那次存盘。
+        BetterAutoSaveCore.setInAutosaveWindow(false);
+
         SaveScheduler scheduler = BetterAutoSaveCore.scheduler();
         if (scheduler != null && !scheduler.isShutdownMode()) {
             scheduler.enterShutdownMode();
@@ -75,7 +84,7 @@ public abstract class MinecraftServerMixin {
     @Inject(method = "saveEverything", at = @At("HEAD"))
     private void betterautosave$beginSaveWindow(boolean suppressLog, boolean flush, boolean forced,
                                                 CallbackInfoReturnable<Boolean> cir) {
-        BetterAutoSaveCore.setInAutosaveWindow(!flush && !forced);
+        BetterAutoSaveCore.setInAutosaveWindow(BetterAutoSaveConfig.enabled() && !flush && !forced);
     }
 
     @Inject(method = "saveEverything", at = @At("RETURN"))
@@ -132,8 +141,9 @@ public abstract class MinecraftServerMixin {
             return;
         }
         int maxPerTick = BetterAutoSaveConfig.playerDataStaggerMaxPerTick();
-        if (maxPerTick <= 0) {
-            // 运行期关掉了错峰: 把积压一次写完, 不留尾巴。
+        if (maxPerTick <= 0 || !BetterAutoSaveConfig.enabled()) {
+            // 运行期关掉了错峰或主开关: 把积压一次写完, 不留尾巴。这里不能直接 return ——
+            // 队列里的人是上一次 autosave 排进来的, 丢下不管等于他们这一轮不落盘。
             ((PlayerListSaveAccess) getPlayerList()).betterautosave$saveBatch(stagger.drainAll());
             return;
         }

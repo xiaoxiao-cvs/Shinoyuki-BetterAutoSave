@@ -4,6 +4,7 @@ import com.shinoyuki.betterautosave.BetterAutoSaveCore;
 import com.shinoyuki.betterautosave.config.BetterAutoSaveConfig;
 import com.shinoyuki.betterautosave.core.playerdata.PlayerListSaveAccess;
 import com.shinoyuki.betterautosave.core.playerdata.PlayerSaveStagger;
+import com.shinoyuki.betterautosave.core.scheduler.SaveScheduler;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.players.PlayerList;
 import org.spongepowered.asm.mixin.Final;
@@ -59,10 +60,14 @@ public abstract class PlayerListSaveAllMixin implements PlayerListSaveAccess {
         }
         int maxPerTick = BetterAutoSaveConfig.playerDataStaggerMaxPerTick();
         boolean inAutosave = BetterAutoSaveCore.isInAutosaveWindow();
+        // 关服期一律不错峰: stopServer 之后没有 tick 再来消化队列。窗口标志已在 stopServer 的
+        // HEAD 复位, 这里再看一次 shutdownMode 是第二道闸 —— 关服存盘只有一次机会。
+        SaveScheduler scheduler = BetterAutoSaveCore.scheduler();
+        boolean shuttingDown = scheduler != null && scheduler.isShutdownMode();
 
-        if (maxPerTick <= 0 || !inAutosave) {
-            // 非错峰路径 (/save-all, 关服, 或功能关闭): 先把积压写完再放行 vanilla 全量循环。
-            // 不这么做的话, /save-all 返回时可能仍有玩家停在队列里没落盘。
+        if (maxPerTick <= 0 || !inAutosave || shuttingDown || !BetterAutoSaveConfig.enabled()) {
+            // 非错峰路径 (/save-all, 关服, 主开关关, 或功能关闭): 先把积压写完再放行 vanilla
+            // 全量循环。不这么做的话, /save-all 返回时可能仍有玩家停在队列里没落盘。
             betterautosave$flushPending(stagger);
             return;
         }

@@ -41,7 +41,8 @@ public abstract class ServerStatsCounterSaveMixin {
 
     @Inject(method = "save", at = @At("HEAD"), cancellable = true)
     private void betterautosave$atomicSave(CallbackInfo ci) {
-        if (!BetterAutoSaveConfig.playerDataAtomicSidecarWrite()) {
+        // 主开关承诺"关掉等于没装", 所有拦截点都必须兑现它, 否则运维关了主开关仍在跑 BAS 的代码。
+        if (!BetterAutoSaveConfig.enabled() || !BetterAutoSaveConfig.playerDataAtomicSidecarWrite()) {
             return;
         }
         byte[] bytes;
@@ -57,9 +58,14 @@ public abstract class ServerStatsCounterSaveMixin {
         Path target = file.toPath();
         try {
             AtomicFileWriter.write(bytes, target,
-                    target.resolveSibling(target.getFileName() + ".bak"));
+                    target.resolveSibling(target.getFileName() + ".bak"),
+                    BetterAutoSaveConfig.playerDataSidecarFsync());
         } catch (IOException e) {
-            BetterAutoSaveMod.LOGGER.error("[BetterAutoSave] stats 原子写失败: {}", file, e);
+            BetterAutoSaveMod.LOGGER.error("[BetterAutoSave] stats 原子写失败, 回退原版写盘路径: {}", file, e);
+            // 不能 cancel: 失败可能发生在备份轮转之后、替换之前, 此刻正本已被移走。取消 vanilla 就没有
+            // 任何东西再把它写回来, 下次启动 ServerStatsCounter 见不到文件会静默按全新统计加载。
+            // 放行 vanilla 的截断写至少能把正本重建出来 —— 它自己也只是 LOGGER.error 不上抛。
+            return;
         }
         ci.cancel();
     }

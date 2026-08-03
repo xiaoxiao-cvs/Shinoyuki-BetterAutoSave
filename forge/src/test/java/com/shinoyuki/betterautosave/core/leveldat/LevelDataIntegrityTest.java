@@ -193,4 +193,70 @@ class LevelDataIntegrityTest {
         assertEquals("level.dat.2026-08-03_10-00-00", remaining.get(2).getFileName().toString(),
                 "必须保留最新的 3 代, 删掉更旧的");
     }
+
+    /**
+     * 复现 vanilla {@code Util.safeReplaceFile} 换名过程中 level.dat 短暂不存在的窗口: 单次判定
+     * 会把一个完全健康的世界报成 MISSING, 而那条告警指示运维停服做破坏性回滚。
+     */
+    @Test
+    void single_shot_verify_reports_missing_inside_rename_window(@TempDir Path dir) throws IOException {
+        Path levelDat = dir.resolve("level.dat");
+        // 窗口中的状态: 正本已被移走, 尚未换上新的。
+        assertEquals(LevelDataIntegrity.Verdict.MISSING,
+                LevelDataIntegrity.verifyAfterWrite(levelDat, LevelDataIntegrity.VerifyStrength.CHECKSUM)
+                        .verdict(),
+                "单次判定在换名窗口里必然误判 —— 这正是需要重试的原因");
+    }
+
+    @Test
+    void retry_rides_out_the_rename_window(@TempDir Path dir) throws Exception {
+        Path levelDat = dir.resolve("level.dat");
+        CompoundTag good = levelRoot("world", 3465, true);
+        // 模拟窗口: 校验开始时文件不存在, 120ms 后 (第 2 次尝试之前) 才落位。
+        Thread writer = new Thread(() -> {
+            try {
+                Thread.sleep(120L);
+                write(levelDat, good);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        writer.start();
+        try {
+            LevelDataIntegrity.Result result = LevelDataIntegrity.verifyAfterWriteWithRetry(
+                    levelDat, LevelDataIntegrity.VerifyStrength.CHECKSUM, 3, 150L);
+            assertEquals(LevelDataIntegrity.Verdict.OK, result.verdict(),
+                    "重试必须把换名窗口排除掉, 否则健康世界会被报成损坏并触发人工回滚");
+            assertTrue(result.usable());
+        } finally {
+            writer.join();
+        }
+    }
+
+    @Test
+    void retry_does_not_mask_a_genuinely_broken_file(@TempDir Path dir) throws IOException {
+        Path levelDat = dir.resolve("level.dat");
+        Files.write(levelDat, "not-gzip".getBytes(StandardCharsets.UTF_8));
+
+        LevelDataIntegrity.Result result = LevelDataIntegrity.verifyAfterWriteWithRetry(
+                levelDat, LevelDataIntegrity.VerifyStrength.CHECKSUM, 3, 10L);
+
+        assertEquals(LevelDataIntegrity.Verdict.UNREADABLE, result.verdict(),
+                "重试只排除瞬时窗口, 真损坏必须照报 —— 否则这层校验就白做了");
+    }
+
+    @Test
+    void retry_returns_immediately_when_first_attempt_passes(@TempDir Path dir) throws IOException {
+        Path levelDat = dir.resolve("level.dat");
+        write(levelDat, levelRoot("world", 3465, true));
+
+        long start = System.nanoTime();
+        LevelDataIntegrity.Result result = LevelDataIntegrity.verifyAfterWriteWithRetry(
+                levelDat, LevelDataIntegrity.VerifyStrength.CHECKSUM, 3, 5_000L);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+        assertEquals(LevelDataIntegrity.Verdict.OK, result.verdict());
+        assertTrue(elapsedMs < 1_000L,
+                "通过路径不得付任何重试代价, 实测耗时 " + elapsedMs + "ms");
+    }
 }

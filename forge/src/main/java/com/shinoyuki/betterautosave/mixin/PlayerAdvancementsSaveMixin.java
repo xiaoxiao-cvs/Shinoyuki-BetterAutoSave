@@ -128,6 +128,10 @@ public abstract class PlayerAdvancementsSaveMixin {
 
     @Inject(method = "save", at = @At("HEAD"), cancellable = true)
     private void betterautosave$atomicSave(CallbackInfo ci) {
+        // 主开关承诺"关掉等于没装", 所有拦截点都必须兑现它。
+        if (!BetterAutoSaveConfig.enabled()) {
+            return;
+        }
         ConfigSpec.AdvancementsSkipMode skipMode = BetterAutoSaveConfig.playerDataAdvancementsSkipMode();
         boolean atomic = BetterAutoSaveConfig.playerDataAtomicSidecarWrite();
         if (!atomic && skipMode == ConfigSpec.AdvancementsSkipMode.OFF) {
@@ -165,7 +169,11 @@ public abstract class PlayerAdvancementsSaveMixin {
             return;
         }
 
-        byte[] digest = betterautosave$sha256(bytes);
+        // 摘要只在 AUDIT 模式下有消费者。门控在 skipMode 而不是 decision 上: AUDIT 的脏周期
+        // (decision=WRITE_FULL) 也必须更新基线, 否则下一个干净周期无从对拍。OFF/ON 两档下
+        // 这份摘要从不被读, 而 advancements JSON 大整合包下每人几百 KB, 白算在主线程上。
+        boolean auditing = skipMode == ConfigSpec.AdvancementsSkipMode.AUDIT;
+        byte[] digest = auditing ? betterautosave$sha256(bytes) : null;
         if (decision == AdvancementsSkipPolicy.Decision.WRITE_AUDIT
                 && betterautosave$lastWrittenDigest != null
                 && !Arrays.equals(digest, betterautosave$lastWrittenDigest)) {
@@ -181,7 +189,8 @@ public abstract class PlayerAdvancementsSaveMixin {
         if (atomic) {
             try {
                 AtomicFileWriter.write(bytes, playerSavePath,
-                        playerSavePath.resolveSibling(playerSavePath.getFileName() + ".bak"));
+                        playerSavePath.resolveSibling(playerSavePath.getFileName() + ".bak"),
+                        BetterAutoSaveConfig.playerDataSidecarFsync());
             } catch (IOException e) {
                 // 与 vanilla 同级别的失败处理 (它也只 LOGGER.error)。原子写的好处是失败时目标文件
                 // 仍是上一版完整内容, 而不是被截断的半截。

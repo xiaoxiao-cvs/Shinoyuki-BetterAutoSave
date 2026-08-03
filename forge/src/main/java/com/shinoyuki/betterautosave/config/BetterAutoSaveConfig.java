@@ -33,6 +33,7 @@ public final class BetterAutoSaveConfig {
             levelDataPostWriteVerify;
     private static volatile boolean playerDataLoadFallback;
     private static volatile boolean playerDataAtomicSidecarWrite;
+    private static volatile boolean playerDataSidecarFsync;
     private static volatile ConfigSpec.AdvancementsSkipMode playerDataAdvancementsSkipMode;
     private static volatile int playerDataAdvancementsForceFullWriteCycles;
     private static volatile int playerDataStaggerMaxPerTick;
@@ -141,6 +142,10 @@ public final class BetterAutoSaveConfig {
         return playerDataAtomicSidecarWrite;
     }
 
+    public static boolean playerDataSidecarFsync() {
+        return playerDataSidecarFsync;
+    }
+
     public static ConfigSpec.AdvancementsSkipMode playerDataAdvancementsSkipMode() {
         return playerDataAdvancementsSkipMode;
     }
@@ -218,6 +223,7 @@ public final class BetterAutoSaveConfig {
         levelDataPostWriteVerify = ConfigSpec.LEVEL_DATA_POST_WRITE_VERIFY.get();
         playerDataLoadFallback = ConfigSpec.PLAYER_DATA_LOAD_FALLBACK.get();
         playerDataAtomicSidecarWrite = ConfigSpec.PLAYER_DATA_ATOMIC_SIDECAR_WRITE.get();
+        playerDataSidecarFsync = ConfigSpec.PLAYER_DATA_SIDECAR_FSYNC.get();
         playerDataAdvancementsSkipMode = ConfigSpec.PLAYER_DATA_ADVANCEMENTS_SKIP_MODE.get();
         playerDataAdvancementsForceFullWriteCycles =
                 ConfigSpec.PLAYER_DATA_ADVANCEMENTS_FORCE_FULL_WRITE_CYCLES.get();

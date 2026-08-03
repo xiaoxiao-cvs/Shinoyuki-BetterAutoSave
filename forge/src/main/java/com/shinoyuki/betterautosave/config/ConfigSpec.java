@@ -52,6 +52,7 @@ public final class ConfigSpec {
             LEVEL_DATA_POST_WRITE_VERIFY;
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_LOAD_FALLBACK;
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_ATOMIC_SIDECAR_WRITE;
+    public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_SIDECAR_FSYNC;
     public static final ForgeConfigSpec.EnumValue<AdvancementsSkipMode> PLAYER_DATA_ADVANCEMENTS_SKIP_MODE;
     public static final ForgeConfigSpec.IntValue PLAYER_DATA_ADVANCEMENTS_FORCE_FULL_WRITE_CYCLES;
     public static final ForgeConfigSpec.IntValue PLAYER_DATA_STAGGER_MAX_PER_TICK;
@@ -350,11 +351,37 @@ public final class ConfigSpec {
                          "back over the file. The advancements file is up to a few hundred KB on a large modpack, so",
                          "the write window is not small. The same shape applies to stats.",
                          "",
-                         "This is a data-safety fix with no performance component and no semantic change: the bytes",
-                         "that land on disk are identical, they just land all at once.",
+                         "The bytes that land on disk are identical, they just land all at once. The added cost on",
+                         "the main thread is two renames per file - the durability barrier that would actually be",
+                         "expensive there is sidecarFsync below, and that one is off by default.",
                          "",
                          "Default true. Hot-reloadable.")
                 .define("atomicSidecarWrite", true);
+
+        PLAYER_DATA_SIDECAR_FSYNC = BUILDER
+                .comment("With atomicSidecarWrite on, also fsync the temp file before renaming it into place.",
+                         "",
+                         "WHAT IT BUYS: temp-file-plus-rename alone already removes the truncation window, which is",
+                         "the failure this feature exists to fix. fsync covers a narrower one - a host power loss or",
+                         "kernel panic in the seconds between the rename and the kernel writing the data back, where",
+                         "the rename is durable but the data is not, leaving a correctly sized file full of zeroes.",
+                         "Note that ext4 in its default data=ordered mode already flushes a newly written file before",
+                         "committing a rename over an existing one, so on the most common Linux setup this switch is",
+                         "close to redundant.",
+                         "",
+                         "WHY IT IS OFF BY DEFAULT: PlayerList.save runs on the server thread, once per online player",
+                         "per autosave, and writes both sidecar files each time. Turning this on puts two synchronous",
+                         "device flushes per player on the main thread - 120 of them in a single tick at 60 players,",
+                         "each one waiting on a filesystem journal commit that BAS's own worker writes are competing",
+                         "for. Vanilla does no fsync anywhere on this path, not even for playerdata/<uuid>.dat, so",
+                         "leaving this on would be a main-thread regression against vanilla in the exact place this",
+                         "release is trying to make cheaper.",
+                         "",
+                         "Turn it on if the host has no battery-backed write cache and unclean power loss is a real",
+                         "risk, and pair it with staggerMaxPerTick so the flushes are spread across ticks.",
+                         "",
+                         "Default false. Hot-reloadable.")
+                .define("sidecarFsync", false);
 
         PLAYER_DATA_ADVANCEMENTS_SKIP_MODE = BUILDER
                 .comment("Skip rewriting advancements/<uuid>.json when the player's progress has not changed since",

@@ -17,6 +17,14 @@ public final class LevelDataVerifyTask implements SaveTask {
 
     private static final Logger LOGGER = BetterAutoSaveMod.LOGGER;
 
+    /**
+     * 判定为不可用时的重试次数与间隔。用于排除 vanilla {@code Util.safeReplaceFile} 换名过程中
+     * level.dat 短暂不存在的窗口 (实测约 2ms), 详见
+     * {@link LevelDataIntegrity#verifyAfterWriteWithRetry}。总等待上限 300ms, 只发生在异常路径上。
+     */
+    private static final int VERIFY_ATTEMPTS = 3;
+    private static final long VERIFY_RETRY_DELAY_MS = 150L;
+
     private final Path levelDat;
     private final Path oldDat;
     private final LevelDataIntegrity.VerifyStrength strength;
@@ -34,7 +42,8 @@ public final class LevelDataVerifyTask implements SaveTask {
 
     @Override
     public void execute() {
-        LevelDataIntegrity.Result result = LevelDataIntegrity.verifyAfterWrite(levelDat, strength);
+        LevelDataIntegrity.Result result = LevelDataIntegrity.verifyAfterWriteWithRetry(
+                levelDat, strength, VERIFY_ATTEMPTS, VERIFY_RETRY_DELAY_MS);
         if (result.usable()) {
             return;
         }

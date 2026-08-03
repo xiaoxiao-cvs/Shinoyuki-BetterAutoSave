@@ -40,12 +40,26 @@ public final class AtomicFileWriter {
     }
 
     /**
+     * 把 {@code content} 原子写入 {@code target}, 落盘前做一次 fsync.
+     *
+     * <p>调用方必须不在服务器主线程上 —— fsync 会同步等设备确认。主线程路径请用四参重载并传
+     * {@code fsync=false}.
+     */
+    public static void write(byte[] content, Path target, Path backup) throws IOException {
+        write(content, target, backup, true);
+    }
+
+    /**
      * 把 {@code content} 原子写入 {@code target}.
      *
      * @param backup 非 null 时, 在替换之前把现有 target 轮转到该路径 (目标不存在则跳过轮转).
      *               轮转紧邻替换发生, 不提前做 —— 提前轮转会留下"备份是上一代、正本缺失"的窗口。
+     * @param fsync  替换之前是否等临时文件真正落到设备。消除截断窗口靠的是 tmp + 原子替换本身,
+     *               与本参数无关; fsync 额外覆盖的是"改名已持久但数据还在 page cache 里"时掉电,
+     *               得到一个长度正确、内容全零的文件。它的代价是一次同步刷盘, 在主线程上按在线
+     *               人数放大, 故主线程调用方一律传 false (见 playerData.sidecarFsync)。
      */
-    public static void write(byte[] content, Path target, Path backup) throws IOException {
+    public static void write(byte[] content, Path target, Path backup, boolean fsync) throws IOException {
         Path dir = target.toAbsolutePath().getParent();
         if (dir != null) {
             Files.createDirectories(dir);
@@ -56,9 +70,9 @@ public final class AtomicFileWriter {
             try (FileOutputStream fos = new FileOutputStream(tmp.toFile())) {
                 fos.write(content);
                 fos.flush();
-                // fsync: 不做的话 rename 的元数据可能先于数据落盘, 掉电后得到一个长度正确但内容是
-                // 空洞的文件 —— 那比截断更难发现。
-                fos.getFD().sync();
+                if (fsync) {
+                    fos.getFD().sync();
+                }
             }
             if (backup != null && Files.exists(target)) {
                 // 轮转失败不阻断主流程: 没有备份仍然好过不写新内容, 而新内容本身是原子替换的。
@@ -71,7 +85,7 @@ public final class AtomicFileWriter {
             try {
                 Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (AtomicMoveNotSupportedException e) {
-                // 文件系统不支持原子 move: 降级为非原子替换。tmp 已 fsync 完整, 仍优于就地截断写。
+                // 文件系统不支持原子 move: 降级为非原子替换。tmp 内容已完整, 仍优于就地截断写。
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {

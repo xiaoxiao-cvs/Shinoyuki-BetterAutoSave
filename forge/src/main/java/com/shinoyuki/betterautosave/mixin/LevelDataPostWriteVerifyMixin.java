@@ -46,6 +46,9 @@ public abstract class LevelDataPostWriteVerifyMixin {
             at = @At("RETURN"))
     private void betterautosave$verifyAfterWrite(RegistryAccess registries, WorldData worldData,
                                                  CompoundTag playerNbt, CallbackInfo ci) {
+        if (!BetterAutoSaveConfig.enabled()) {
+            return;
+        }
         LevelDataIntegrity.VerifyStrength strength = BetterAutoSaveConfig.levelDataPostWriteVerify();
         if (strength == LevelDataIntegrity.VerifyStrength.OFF) {
             return;
