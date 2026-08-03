@@ -36,6 +36,8 @@ public final class ConfigSpec {
     public static final ForgeConfigSpec.EnumValue<EventCompatMode> EVENT_COMPAT_MODE;
     public static final ForgeConfigSpec.BooleanValue LEVEL_DATA_CACHE_REGISTRY_SNAPSHOT;
     public static final ForgeConfigSpec.IntValue LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES;
+    public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_LOAD_FALLBACK;
+    public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_ATOMIC_SIDECAR_WRITE;
     public static final ForgeConfigSpec.BooleanValue LOAD_ENABLED;
     public static final ForgeConfigSpec.EnumValue<LoadCompatMode> LOAD_EVENT_COMPAT_MODE;
     public static final ForgeConfigSpec.IntValue LOAD_MAX_RETRIES;
@@ -207,6 +209,60 @@ public final class ConfigSpec {
                          "pure audit mode - useful for a few days when first enabling on a new modpack).",
                          "Set 0 to never revalidate: only do that once you have run for a long time with no MISMATCH.")
                 .defineInRange("registryCacheRevalidateCycles", 12, 0, 1000);
+
+        BUILDER.pop();
+
+        BUILDER.comment("Player data (playerdata/, stats/ and advancements/)").push("playerData");
+
+        PLAYER_DATA_LOAD_FALLBACK = BUILDER
+                .comment("On a failed read of playerdata/<uuid>.dat, quarantine it and try <uuid>.dat_old before",
+                         "treating the player as brand new.",
+                         "",
+                         "WHAT THIS FIXES: PlayerDataStorage.save writes <uuid>.dat through Util.safeReplaceFile,",
+                         "which first renames the live file to <uuid>.dat_old and only then renames the new temp file",
+                         "into place. PlayerDataStorage.load reads ONLY <uuid>.dat: if it is missing or unreadable,",
+                         "vanilla logs a single WARN with no stack trace, returns null, and never calls player.load -",
+                         "so the player comes online as a brand new player. Empty inventory, empty ender chest, spawn",
+                         "position, zero experience, default game mode, and every mod's data that rides on ForgeCaps,",
+                         "all gone. The intact <uuid>.dat_old that vanilla itself wrote moments earlier is never",
+                         "consulted, and the next autosave overwrites it with the blank player.",
+                         "A crash or power loss in the window between those two renames therefore wipes that player",
+                         "silently, with a complete backup sitting right next to the missing file. The operator has",
+                         "about one autosave interval to notice before the backup is recycled.",
+                         "",
+                         "This is fixed upstream in 1.21: the unreadable file is copied aside as",
+                         "<uuid>_corrupted_<timestamp>.dat and <uuid>.dat_old is tried next. This setting backports",
+                         "that behavior to 1.20.1, quarantine copy included, so the unreadable original survives for",
+                         "inspection instead of being recycled.",
+                         "",
+                         "Default true: this only runs on a path whose vanilla outcome is guaranteed data loss, so",
+                         "there is no scenario in which the vanilla behavior is preferable. Hot-reloadable.",
+                         "",
+                         "COMPAT WARNING: a utility that blanks a player by deleting <uuid>.dat will now find the",
+                         "player restored from <uuid>.dat_old on next login. Such a tool must delete both files.")
+                .define("loadFallback", true);
+
+        PLAYER_DATA_ATOMIC_SIDECAR_WRITE = BUILDER
+                .comment("Write stats/<uuid>.json and advancements/<uuid>.json atomically (temp file + fsync +",
+                         "rename, keeping one .bak) instead of truncating the live file in place.",
+                         "",
+                         "WHAT THIS FIXES: of the three files PlayerList.save writes per player, only",
+                         "playerdata/<uuid>.dat gets vanilla's temp-file-plus-rename treatment and a .dat_old backup.",
+                         "ServerStatsCounter.save calls FileUtils.writeStringToFile and PlayerAdvancements.save opens",
+                         "the target with newBufferedWriter (CREATE + TRUNCATE_EXISTING): both truncate the only copy",
+                         "and then stream into it. Confirm this on any world folder - playerdata/ is full of .dat_old",
+                         "files and stats/ and advancements/ have no backups at all.",
+                         "A crash partway through leaves a truncated JSON file. On the next login the parse fails,",
+                         "the exception is caught and logged at ERROR, and loading CONTINUES with an empty progress",
+                         "map - so the player joins with no advancements, and the next autosave writes that empty map",
+                         "back over the file. The advancements file is up to a few hundred KB on a large modpack, so",
+                         "the write window is not small. The same shape applies to stats.",
+                         "",
+                         "This is a data-safety fix with no performance component and no semantic change: the bytes",
+                         "that land on disk are identical, they just land all at once.",
+                         "",
+                         "Default true. Hot-reloadable.")
+                .define("atomicSidecarWrite", true);
 
         BUILDER.pop();
 

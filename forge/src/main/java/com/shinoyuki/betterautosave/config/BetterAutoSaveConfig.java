@@ -27,6 +27,8 @@ public final class BetterAutoSaveConfig {
     private static volatile ConfigSpec.EventCompatMode eventCompatMode;
     private static volatile boolean levelDataCacheRegistrySnapshot;
     private static volatile int levelDataRegistryCacheRevalidateCycles;
+    private static volatile boolean playerDataLoadFallback;
+    private static volatile boolean playerDataAtomicSidecarWrite;
     private static volatile boolean diagnosticLogging;
     private static volatile int diagnosticLogIntervalTicks;
     private static volatile boolean prometheusEnabled;
@@ -111,6 +113,14 @@ public final class BetterAutoSaveConfig {
         return levelDataRegistryCacheRevalidateCycles;
     }
 
+    public static boolean playerDataLoadFallback() {
+        return playerDataLoadFallback;
+    }
+
+    public static boolean playerDataAtomicSidecarWrite() {
+        return playerDataAtomicSidecarWrite;
+    }
+
     public static boolean diagnosticLogging() {
         return diagnosticLogging;
     }
@@ -171,6 +181,8 @@ public final class BetterAutoSaveConfig {
         eventCompatMode = ConfigSpec.EVENT_COMPAT_MODE.get();
         levelDataCacheRegistrySnapshot = ConfigSpec.LEVEL_DATA_CACHE_REGISTRY_SNAPSHOT.get();
         levelDataRegistryCacheRevalidateCycles = ConfigSpec.LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES.get();
+        playerDataLoadFallback = ConfigSpec.PLAYER_DATA_LOAD_FALLBACK.get();
+        playerDataAtomicSidecarWrite = ConfigSpec.PLAYER_DATA_ATOMIC_SIDECAR_WRITE.get();
         diagnosticLogging = ConfigSpec.DIAGNOSTIC_LOGGING.get();
         diagnosticLogIntervalTicks = ConfigSpec.DIAGNOSTIC_LOG_INTERVAL_TICKS.get();
         prometheusEnabled = ConfigSpec.PROMETHEUS_ENABLED.get();
