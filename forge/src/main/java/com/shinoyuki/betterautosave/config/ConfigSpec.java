@@ -20,6 +20,16 @@ public final class ConfigSpec {
         FULL
     }
 
+    /**
+     * advancements 脏跳过档位。AUDIT 是 issue #25 已验证过的上线打法: 照常写盘但同时对拍,
+     * 生产跑够时长零 MISMATCH 后才翻 ON。没有"部分跳过"这种中间态, 故不是布尔的三态化。
+     */
+    public enum AdvancementsSkipMode {
+        OFF,
+        AUDIT,
+        ON
+    }
+
     private static final ForgeConfigSpec.Builder BUILDER = new ForgeConfigSpec.Builder();
 
     public static final ForgeConfigSpec.BooleanValue ENABLED;
@@ -38,6 +48,8 @@ public final class ConfigSpec {
     public static final ForgeConfigSpec.IntValue LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES;
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_LOAD_FALLBACK;
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_ATOMIC_SIDECAR_WRITE;
+    public static final ForgeConfigSpec.EnumValue<AdvancementsSkipMode> PLAYER_DATA_ADVANCEMENTS_SKIP_MODE;
+    public static final ForgeConfigSpec.IntValue PLAYER_DATA_ADVANCEMENTS_FORCE_FULL_WRITE_CYCLES;
     public static final ForgeConfigSpec.BooleanValue LOAD_ENABLED;
     public static final ForgeConfigSpec.EnumValue<LoadCompatMode> LOAD_EVENT_COMPAT_MODE;
     public static final ForgeConfigSpec.IntValue LOAD_MAX_RETRIES;
@@ -263,6 +275,55 @@ public final class ConfigSpec {
                          "",
                          "Default true. Hot-reloadable.")
                 .define("atomicSidecarWrite", true);
+
+        PLAYER_DATA_ADVANCEMENTS_SKIP_MODE = BUILDER
+                .comment("Skip rewriting advancements/<uuid>.json when the player's progress has not changed since",
+                         "the last successful write.",
+                         "",
+                         "WHY THIS IS THE BIGGEST WIN HERE: PlayerAdvancements.save has no dirty check at all. Every",
+                         "autosave it walks every loaded advancement, filters by hasProgress(), rebuilds the whole",
+                         "JSON tree through Gson, pretty-prints it and writes the entire file - whether or not",
+                         "anything changed. Measured on a 137-mod server it is 55% of the entire PlayerList.saveAll",
+                         "frame, roughly twice the cost of writing the player's actual NBT.",
+                         "And on that server it changes almost never: sampling the live world folder across three",
+                         "consecutive autosaves, the advancements files of the online players were byte-for-byte",
+                         "identical every time (mtime advancing, md5 constant), while their playerdata and stats",
+                         "files changed on every single pass. Of 18,883 criterion timestamps across all 31 players,",
+                         "89% were older than 30 days and only 36 (0.19%) were from the last 24 hours - the bulk of",
+                         "the content is minecraft:recipes/* entries that unlock once and never change again.",
+                         "Skipping is byte-equivalent on disk, so backup mods see exactly the same data.",
+                         "",
+                         "OFF (default): vanilla behavior, rewrite every time.",
+                         "AUDIT: still writes every time, but also computes what the dirty flag WOULD have decided and",
+                         "  compares it against the actual content. A disagreement logs an ERROR naming the player.",
+                         "  No speedup - this exists so you can prove the flag is correct on YOUR modpack before",
+                         "  trusting it. This is the same roll-out shape used for levelData.cacheRegistrySnapshot.",
+                         "ON: actually skip the write when the flag says clean.",
+                         "",
+                         "Recommended sequence: set AUDIT, run for a few days, confirm no MISMATCH appears in the",
+                         "log, then set ON. Hot-reloadable.",
+                         "",
+                         "COMPAT WARNING: the dirty flag is set by award(), revoke(), load() and reload(). A mod that",
+                         "reaches past those and mutates progress directly (for instance by holding the object from",
+                         "getOrStartProgress and calling grantProgress on it) will not set the flag. The forced full",
+                         "write below bounds how long such a change can go unwritten; AUDIT reports it as a MISMATCH.")
+                .defineEnum("advancementsSkipMode", AdvancementsSkipMode.OFF);
+
+        PLAYER_DATA_ADVANCEMENTS_FORCE_FULL_WRITE_CYCLES = BUILDER
+                .comment("With advancementsSkipMode not OFF, force one full write after this many consecutive skips,",
+                         "even when the dirty flag says nothing changed.",
+                         "",
+                         "Two things this buys back. First, it bounds the damage from a mod that mutates progress",
+                         "without going through award()/revoke() - such a change lands on disk within this many",
+                         "autosaves instead of never. Second, it restores vanilla's accidental self-healing property:",
+                         "because vanilla rewrites the file unconditionally, an externally corrupted or hand-edited",
+                         "advancements file gets overwritten with the in-memory truth on the next autosave. Skipping",
+                         "gives that up, and this setting hands it back on a schedule.",
+                         "",
+                         "Default 12: with the vanilla 5-minute autosave that is one guaranteed write per hour per",
+                         "player, so 11 of every 12 are free. Set 0 to never force a write (only do that once AUDIT",
+                         "has run clean for a long time).")
+                .defineInRange("advancementsForceFullWriteCycles", 12, 0, 1000);
 
         BUILDER.pop();
 

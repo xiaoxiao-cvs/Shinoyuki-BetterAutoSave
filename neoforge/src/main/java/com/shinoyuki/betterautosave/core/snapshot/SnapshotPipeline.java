@@ -629,21 +629,4 @@ public final class SnapshotPipeline implements ChunkSubmissionSink {
         return false;
     }
 
-    public boolean awaitWorkerIdle(long timeoutMs) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            if (chunkWorkerQueue.isEmpty()
-                    && entityWorkerQueue.isEmpty()
-                    && savedDataWorkerQueue.isEmpty()) {
-                return true;
-            }
-            try {
-                TimeUnit.MILLISECONDS.sleep(20);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-        return false;
-    }
 }

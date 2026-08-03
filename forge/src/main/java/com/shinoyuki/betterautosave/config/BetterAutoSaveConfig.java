@@ -29,6 +29,8 @@ public final class BetterAutoSaveConfig {
     private static volatile int levelDataRegistryCacheRevalidateCycles;
     private static volatile boolean playerDataLoadFallback;
     private static volatile boolean playerDataAtomicSidecarWrite;
+    private static volatile ConfigSpec.AdvancementsSkipMode playerDataAdvancementsSkipMode;
+    private static volatile int playerDataAdvancementsForceFullWriteCycles;
     private static volatile boolean diagnosticLogging;
     private static volatile int diagnosticLogIntervalTicks;
     private static volatile boolean prometheusEnabled;
@@ -121,6 +123,14 @@ public final class BetterAutoSaveConfig {
         return playerDataAtomicSidecarWrite;
     }
 
+    public static ConfigSpec.AdvancementsSkipMode playerDataAdvancementsSkipMode() {
+        return playerDataAdvancementsSkipMode;
+    }
+
+    public static int playerDataAdvancementsForceFullWriteCycles() {
+        return playerDataAdvancementsForceFullWriteCycles;
+    }
+
     public static boolean diagnosticLogging() {
         return diagnosticLogging;
     }
@@ -183,6 +193,9 @@ public final class BetterAutoSaveConfig {
         levelDataRegistryCacheRevalidateCycles = ConfigSpec.LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES.get();
         playerDataLoadFallback = ConfigSpec.PLAYER_DATA_LOAD_FALLBACK.get();
         playerDataAtomicSidecarWrite = ConfigSpec.PLAYER_DATA_ATOMIC_SIDECAR_WRITE.get();
+        playerDataAdvancementsSkipMode = ConfigSpec.PLAYER_DATA_ADVANCEMENTS_SKIP_MODE.get();
+        playerDataAdvancementsForceFullWriteCycles =
+                ConfigSpec.PLAYER_DATA_ADVANCEMENTS_FORCE_FULL_WRITE_CYCLES.get();
         diagnosticLogging = ConfigSpec.DIAGNOSTIC_LOGGING.get();
         diagnosticLogIntervalTicks = ConfigSpec.DIAGNOSTIC_LOG_INTERVAL_TICKS.get();
         prometheusEnabled = ConfigSpec.PROMETHEUS_ENABLED.get();
