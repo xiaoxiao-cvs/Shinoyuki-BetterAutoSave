@@ -1,0 +1,77 @@
+name: Modrinth Retag
+
+# 修复 / 补齐已发布 Modrinth 版本的 game_versions 与 loaders 标签。
+#
+# 为什么需要它: mc-publish 有过一次静默失手 —— 0.19.0 发版时 release.yml 明确传了
+# game-versions: 1.20.1 / 1.21.1, action 也打印了 "Successfully published assets to Modrinth",
+# 但实际写进 Modrinth 的 game_versions 是空数组。空标签的版本不会出现在任何"按 Minecraft 版本
+# 筛选"的结果里, 启动器 (PCL / Prism 等) 也抓不到, 等于发了个用户找不到的版本, 而 CI 全绿。
+#
+# 本工作流直接调 Modrinth REST API 按版本号定位并 PATCH 回正确标签, 且 PATCH 之后立刻回读校验,
+# 空标签一律判失败。它是幂等的: 标签已经正确时 PATCH 写入同样的值, 回读照样通过。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (不带 v 前缀, 例如 0.19.0)。会处理 <版本>-forge 与 <版本>-neoforge 两个 Modrinth 版本'
+        type: string
+        required: true
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Patch and verify Modrinth version tags
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MODRINTH_TOKEN:-}" ]; then
+            echo "::error::MODRINTH_TOKEN secret 未配置"
+            exit 1
+          fi
+
+          API=https://api.modrinth.com/v2
+          PROJECT=shinoyuki-betterautosave
+
+          ALL=$(curl -sf -H "Authorization: $MODRINTH_TOKEN" "$API/project/$PROJECT/version")
+
+          # 加载器 -> 该加载器对应的 Minecraft 版本。与 release.yml 的两个发布步骤保持一致。
+          for pair in "forge:1.20.1" "neoforge:1.21.1"; do
+            LOADER="${pair%%:*}"
+            MC="${pair##*:}"
+            VNUM="$VERSION-$LOADER"
+
+            VID=$(echo "$ALL" | jq -r --arg v "$VNUM" '.[] | select(.version_number == $v) | .id')
+            if [ -z "$VID" ] || [ "$VID" = "null" ]; then
+              echo "::error::Modrinth 上找不到版本 $VNUM"
+              exit 1
+            fi
+            echo "== $VNUM (id=$VID) =="
+
+            BODY=$(jq -nc --arg mc "$MC" --arg l "$LOADER" \
+              '{game_versions: [$mc], loaders: [$l]}')
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+              -H "Authorization: $MODRINTH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$BODY" "$API/version/$VID")
+            echo "  PATCH -> HTTP $CODE"
+            if [ "$CODE" != "204" ]; then
+              echo "::error::PATCH $VNUM 失败 (HTTP $CODE)"
+              exit 1
+            fi
+
+            # 回读校验: 这一步才是本工作流存在的理由 —— 发布工具报成功但标签为空正是被它抓住的。
+            CHECK=$(curl -sf -H "Authorization: $MODRINTH_TOKEN" "$API/version/$VID")
+            GOT_MC=$(echo "$CHECK" | jq -r '.game_versions | join(",")')
+            GOT_LOADER=$(echo "$CHECK" | jq -r '.loaders | join(",")')
+            echo "  回读: game_versions=[$GOT_MC] loaders=[$GOT_LOADER]"
+            if [ "$GOT_MC" != "$MC" ] || [ "$GOT_LOADER" != "$LOADER" ]; then
+              echo "::error::$VNUM 回读不符: 期望 [$MC]/[$LOADER], 实际 [$GOT_MC]/[$GOT_LOADER]"
+              exit 1
+            fi
+          done
+
+          echo "两个版本的标签均已核对通过"

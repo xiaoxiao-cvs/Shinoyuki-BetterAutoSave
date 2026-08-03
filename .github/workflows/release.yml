@@ -185,3 +185,34 @@ jobs:
           changelog-file: release-notes/${{ steps.version.outputs.tag }}.en.md
           loaders: neoforge
           game-versions: 1.21.1
+
+      # mc-publish 会在实际写入空 game_versions 的情况下照样打印 "Successfully published"
+      # (0.19.0 实际踩到)。空标签的版本不出现在任何按 Minecraft 版本的筛选里, 启动器也抓不到 ——
+      # 用户看不见, 而 CI 全绿。故发布后必须回读一次, 标签不对就让发版失败, 再用
+      # modrinth-retag.yml 补。
+      - name: Verify Modrinth version tags
+        if: inputs.dry_run == false && env.MODRINTH_TOKEN != ''
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ALL=$(curl -sf -H "Authorization: $MODRINTH_TOKEN" \
+            https://api.modrinth.com/v2/project/shinoyuki-betterautosave/version)
+          FAILED=0
+          for pair in "forge:1.20.1" "neoforge:1.21.1"; do
+            LOADER="${pair%%:*}"; MC="${pair##*:}"; VNUM="$VERSION-$LOADER"
+            V=$(echo "$ALL" | jq -c --arg v "$VNUM" '.[] | select(.version_number == $v)')
+            if [ -z "$V" ]; then
+              echo "::error::Modrinth 上找不到刚发布的版本 $VNUM"; FAILED=1; continue
+            fi
+            GOT_MC=$(echo "$V" | jq -r '.game_versions | join(",")')
+            GOT_LOADER=$(echo "$V" | jq -r '.loaders | join(",")')
+            echo "$VNUM: game_versions=[$GOT_MC] loaders=[$GOT_LOADER]"
+            if [ "$GOT_MC" != "$MC" ] || [ "$GOT_LOADER" != "$LOADER" ]; then
+              echo "::error::$VNUM 标签不符: 期望 [$MC]/[$LOADER], 实际 [$GOT_MC]/[$GOT_LOADER]。"
+              echo "::error::用 modrinth-retag.yml (输入 $VERSION) 修复。"
+              FAILED=1
+            fi
+          done
+          [ "$FAILED" = "0" ]
