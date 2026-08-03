@@ -125,6 +125,7 @@ class AuditFixParityTest {
                 "com.shinoyuki.betterautosave.core.snapshot.EntitySaveTask",
                 "com.shinoyuki.betterautosave.core.snapshot.SavedDataSaveTask",
                 "com.shinoyuki.betterautosave.core.load.ChunkLoadTask",
+                "com.shinoyuki.betterautosave.core.leveldat.LevelDataVerifyTask",
         };
         for (String fqcn : implementations) {
             assertTrue(hasMethod(fqcn, "abandonOnDegrade"),

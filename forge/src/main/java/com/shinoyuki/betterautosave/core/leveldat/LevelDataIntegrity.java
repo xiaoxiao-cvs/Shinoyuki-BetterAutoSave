@@ -71,6 +71,49 @@ public final class LevelDataIntegrity {
     private LevelDataIntegrity() {
     }
 
+    /**
+     * 写后回读校验的强度档。
+     *
+     * <p>与启动预检不同, 这一步跑在 worker 线程上, 主线程只付一次任务提交。它解决的是
+     * "坏了多久才知道" —— 启动预检要等下次启动才发现, 而写后校验在损坏产生的那一刻就报警,
+     * 此时 {@code level.dat_old} 还是好的, 抢救窗口最大。
+     */
+    public enum VerifyStrength {
+        /** 不校验。 */
+        OFF,
+        /** 只确认能从头到尾解压 (抓截断 / gzip 流损坏), 成本约等于一次顺序读。 */
+        CHECKSUM,
+        /** 完整 NBT 解析 + 语义判据 (额外抓"合法 NBT 但缺 DataVersion"那一类)。 */
+        FULL
+    }
+
+    /**
+     * 写后回读校验。仅读, 绝不修改任何文件 —— 修复决策留给调用方。
+     *
+     * @return OK 表示通过
+     */
+    public static Result verifyAfterWrite(Path levelDat, VerifyStrength strength) {
+        if (strength == VerifyStrength.OFF) {
+            return new Result(Verdict.OK, true, "skipped");
+        }
+        if (strength == VerifyStrength.FULL) {
+            return verify(levelDat);
+        }
+        // CHECKSUM: 只把 gzip 流读到底, 不建 NBT 对象树。截断与流损坏都会在这里抛。
+        if (!Files.isRegularFile(levelDat)) {
+            return new Result(Verdict.MISSING, false, "文件不存在");
+        }
+        try (var in = new java.util.zip.GZIPInputStream(Files.newInputStream(levelDat))) {
+            byte[] buf = new byte[16 * 1024];
+            while (in.read(buf) >= 0) {
+                // 只为把流读到末尾, 触发 gzip 的 CRC 与长度校验。
+            }
+        } catch (Throwable t) {
+            return new Result(Verdict.UNREADABLE, false, "gzip 流校验失败: " + t);
+        }
+        return new Result(Verdict.OK, true, "checksum ok");
+    }
+
     /** 逐层校验一个 level.dat。分层判据见类注释。 */
     public static Result verify(Path levelDat) {
         if (levelDat == null || !Files.isRegularFile(levelDat)) {

@@ -29,6 +29,8 @@ public final class BetterAutoSaveConfig {
     private static volatile int levelDataRegistryCacheRevalidateCycles;
     private static volatile boolean levelDataVerifyOnStartup;
     private static volatile boolean levelDataStartupBackup;
+    private static volatile com.shinoyuki.betterautosave.core.leveldat.LevelDataIntegrity.VerifyStrength
+            levelDataPostWriteVerify;
     private static volatile boolean playerDataLoadFallback;
     private static volatile boolean playerDataAtomicSidecarWrite;
     private static volatile ConfigSpec.AdvancementsSkipMode playerDataAdvancementsSkipMode;
@@ -126,6 +128,11 @@ public final class BetterAutoSaveConfig {
         return levelDataStartupBackup;
     }
 
+    public static com.shinoyuki.betterautosave.core.leveldat.LevelDataIntegrity.VerifyStrength
+            levelDataPostWriteVerify() {
+        return levelDataPostWriteVerify;
+    }
+
     public static boolean playerDataLoadFallback() {
         return playerDataLoadFallback;
     }
@@ -208,6 +215,7 @@ public final class BetterAutoSaveConfig {
         levelDataRegistryCacheRevalidateCycles = ConfigSpec.LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES.get();
         levelDataVerifyOnStartup = ConfigSpec.LEVEL_DATA_VERIFY_ON_STARTUP.get();
         levelDataStartupBackup = ConfigSpec.LEVEL_DATA_STARTUP_BACKUP.get();
+        levelDataPostWriteVerify = ConfigSpec.LEVEL_DATA_POST_WRITE_VERIFY.get();
         playerDataLoadFallback = ConfigSpec.PLAYER_DATA_LOAD_FALLBACK.get();
         playerDataAtomicSidecarWrite = ConfigSpec.PLAYER_DATA_ATOMIC_SIDECAR_WRITE.get();
         playerDataAdvancementsSkipMode = ConfigSpec.PLAYER_DATA_ADVANCEMENTS_SKIP_MODE.get();

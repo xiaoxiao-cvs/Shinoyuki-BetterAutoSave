@@ -48,6 +48,8 @@ public final class ConfigSpec {
     public static final ForgeConfigSpec.IntValue LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES;
     public static final ForgeConfigSpec.BooleanValue LEVEL_DATA_VERIFY_ON_STARTUP;
     public static final ForgeConfigSpec.BooleanValue LEVEL_DATA_STARTUP_BACKUP;
+    public static final ForgeConfigSpec.EnumValue<com.shinoyuki.betterautosave.core.leveldat.LevelDataIntegrity.VerifyStrength>
+            LEVEL_DATA_POST_WRITE_VERIFY;
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_LOAD_FALLBACK;
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_ATOMIC_SIDECAR_WRITE;
     public static final ForgeConfigSpec.EnumValue<AdvancementsSkipMode> PLAYER_DATA_ADVANCEMENTS_SKIP_MODE;
@@ -273,6 +275,32 @@ public final class ConfigSpec {
                          "",
                          "Default true. Each copy is the size of level.dat (a few hundred KB on a large modpack).")
                 .define("startupBackup", true);
+
+        LEVEL_DATA_POST_WRITE_VERIFY = BUILDER
+                .comment("Read level.dat back on a worker thread right after it is written and check it.",
+                         "",
+                         "This answers a different question from verifyOnStartup. That one asks 'is it broken?' at",
+                         "the next boot - by which point vanilla may already have rotated the damaged file into",
+                         "level.dat_old and consumed the last good copy. This one notices at the moment the damage",
+                         "appears, while level.dat_old is still intact and the recovery window is at its widest.",
+                         "",
+                         "The check runs on the SavedData worker queue, so the main thread only pays for submitting",
+                         "the task. It is read-only and never rolls anything back: the server is live at that point,",
+                         "and overwriting the world metadata that is currently in use would cause more trouble than",
+                         "the original fault. It logs loudly instead, and repair happens at the next start.",
+                         "",
+                         "OFF: no check.",
+                         "CHECKSUM (default): decompress the file end to end, which catches truncation and stream",
+                         "  corruption. Roughly one sequential read of the file.",
+                         "FULL: also parse the NBT and apply the same structural checks as verifyOnStartup, which",
+                         "  additionally catches the 'valid NBT but missing DataVersion' case. Costs more, still",
+                         "  entirely off the main thread.",
+                         "",
+                         "Note BAS does not take over writing level.dat - asynchronous writing of it was evaluated",
+                         "and rejected - so what is being verified here is vanilla's own write. That is still worth",
+                         "doing: disk faults, filesystem problems and other mods can all damage it.")
+                .defineEnum("postWriteVerify",
+                        com.shinoyuki.betterautosave.core.leveldat.LevelDataIntegrity.VerifyStrength.CHECKSUM);
 
         BUILDER.pop();
 
