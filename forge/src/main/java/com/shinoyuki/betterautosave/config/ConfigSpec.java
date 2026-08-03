@@ -46,6 +46,8 @@ public final class ConfigSpec {
     public static final ForgeConfigSpec.EnumValue<EventCompatMode> EVENT_COMPAT_MODE;
     public static final ForgeConfigSpec.BooleanValue LEVEL_DATA_CACHE_REGISTRY_SNAPSHOT;
     public static final ForgeConfigSpec.IntValue LEVEL_DATA_REGISTRY_CACHE_REVALIDATE_CYCLES;
+    public static final ForgeConfigSpec.BooleanValue LEVEL_DATA_VERIFY_ON_STARTUP;
+    public static final ForgeConfigSpec.BooleanValue LEVEL_DATA_STARTUP_BACKUP;
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_LOAD_FALLBACK;
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_ATOMIC_SIDECAR_WRITE;
     public static final ForgeConfigSpec.EnumValue<AdvancementsSkipMode> PLAYER_DATA_ADVANCEMENTS_SKIP_MODE;
@@ -221,6 +223,55 @@ public final class ConfigSpec {
                          "pure audit mode - useful for a few days when first enabling on a new modpack).",
                          "Set 0 to never revalidate: only do that once you have run for a long time with no MISMATCH.")
                 .defineInRange("registryCacheRevalidateCycles", 12, 0, 1000);
+
+        LEVEL_DATA_VERIFY_ON_STARTUP = BUILDER
+                .comment("Check level.dat for readability and structural completeness at startup, and repair it from",
+                         "level.dat_old when it is broken.",
+                         "",
+                         "WHAT THIS FIXES: vanilla's fallback to level.dat_old only fires when the reader returns",
+                         "null. That happens when level.dat is MISSING - but the reader a dedicated server actually",
+                         "uses starts with catch (IOException) { throw new UncheckedIOException }, so when the file",
+                         "EXISTS BUT IS UNREADABLE the fallback is structurally unreachable. The exception surfaces",
+                         "as 'Failed to load datapacks, can't proceed with server load ... --safeMode' and the process",
+                         "exits with a normal status code, pointing the operator at datapacks instead of at level.dat.",
+                         "",
+                         "There is a quieter failure too. If the file is valid gzip and valid NBT but Data is missing,",
+                         "or just the single DataVersion int inside it is gone, then getDataVersion falls back to -1,",
+                         "which makes the world-generation datafixer discard and rebuild the whole dimension table.",
+                         "Nothing downstream rejects that, so the server STARTS SUCCESSFULLY with seed 0, default",
+                         "spawn, default time, default weather, default gamerules and default world border, while the",
+                         "region files still hold the old terrain. Startup then rewrites that default data back out",
+                         "and rotates the damaged file into level.dat_old - destroying the last good copy in the same",
+                         "boot, with no error anywhere.",
+                         "",
+                         "When the check fails, the damaged file is moved aside as level.dat_corrupted_<timestamp>",
+                         "(the same naming 1.21 uses) and level.dat_old is put back in its place, so the world loses",
+                         "at most one save cycle. If level.dat_old is unusable too, nothing is touched and the",
+                         "available BAS backups are printed with the exact command to restore one by hand.",
+                         "",
+                         "Default true: this only does anything on a path where the vanilla outcome is a failed start",
+                         "with a misleading message, or a silently reset world. Costs one read of level.dat at boot.")
+                .define("verifyOnStartup", true);
+
+        LEVEL_DATA_STARTUP_BACKUP = BUILDER
+                .comment("Keep known-good copies of level.dat under <world>/betterautosave/leveldat/, made at startup",
+                         "right after the file has been verified.",
+                         "",
+                         "vanilla keeps exactly one spare copy, level.dat_old, and rotates it on every single write -",
+                         "so one boot with a damaged file is enough to consume it. These copies are taken only when",
+                         "the file passed verification, are raw byte copies (not a re-serialization, which would",
+                         "change the bytes and throw away the evidence of a truncated file), and 3 generations are",
+                         "kept, so a fault has to survive three restarts before every fallback is gone.",
+                         "",
+                         "IMPORTANT: these copies are never restored automatically, and vanilla will never read them -",
+                         "it only knows the names level.dat and level.dat_old. Rolling back to a startup copy would",
+                         "rewind world time, weather, gamerules, world border, the dragon fight and scheduled events,",
+                         "and if the mod set changed in between it would also remap block IDs across the whole world.",
+                         "That is an operator decision, so BAS prints the available copies and the exact command and",
+                         "stops there. Automatic repair only ever uses level.dat_old.",
+                         "",
+                         "Default true. Each copy is the size of level.dat (a few hundred KB on a large modpack).")
+                .define("startupBackup", true);
 
         BUILDER.pop();
 

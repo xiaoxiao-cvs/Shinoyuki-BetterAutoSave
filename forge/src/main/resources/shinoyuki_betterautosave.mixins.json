@@ -15,6 +15,7 @@
     "EntityStorageMixin",
     "ForgeHooksLevelSaveMixin",
     "LevelChunkCapsLoadMixin",
+    "LevelDataIntegrityMixin",
     "MinecraftServerMixin",
     "PlayerAdvancementsSaveMixin",
     "PlayerDataStorageLoadMixin",
