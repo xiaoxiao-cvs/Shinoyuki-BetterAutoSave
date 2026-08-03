@@ -137,7 +137,8 @@ public final class SavedDataSaveTask implements SaveTask {
      * vanilla 关服 flush 跳过 -> 丢数据。重新 setDirty 让 vanilla 同步兜底, 释放在途占位, 并配平 serializing。
      * setDirty / ConcurrentHashMap remove / AtomicLong dec 均线程安全, 可在死 worker 的 uncaught handler 线程调。
      */
-    void abandonOnDegrade() {
+    @Override
+    public void abandonOnDegrade() {
         metrics.decInFlightSerializing();
         snapshot.savedData().setDirty();
         releaseInFlight();

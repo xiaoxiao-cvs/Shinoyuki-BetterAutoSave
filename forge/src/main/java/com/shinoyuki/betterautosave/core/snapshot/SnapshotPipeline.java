@@ -360,17 +360,17 @@ public final class SnapshotPipeline implements ChunkSubmissionSink {
         return n;
     }
 
-    /** 按 task 类型路由到对应的 degraded 善后: chunk 还原坐标走 vanilla 兜底 / entity+savedData ERROR / load 退 vanilla read。 */
+    /**
+     * degraded 善后统一走 {@link SaveTask#abandonOnDegrade()}: chunk 还原坐标走 vanilla 兜底 /
+     * entity+savedData ERROR / load 退 vanilla read, 各自在实现里。
+     *
+     * <p>P2: 这里过去是一条四段 instanceof 链且**没有 else 分支**, 而调用方
+     * {@link #drainQueueOnDegrade} 无条件 {@code n++} 并把 n 写进"已善后 N 个"的 ERROR ——
+     * 新增一种 SaveTask 而忘了接善后, 就会被静默丢弃且伪装成成功。改为接口分派后, 漏接在编译期
+     * 就不可能发生 (未覆盖者落到接口默认实现, 那里打 ERROR 而不是沉默)。
+     */
     private static void abandonStrandedTask(SaveTask t) {
-        if (t instanceof ChunkSaveTask cst) {
-            cst.abandonToRecoveryOnDegrade();
-        } else if (t instanceof EntitySaveTask est) {
-            est.abandonOnDegrade();
-        } else if (t instanceof SavedDataSaveTask sdt) {
-            sdt.abandonOnDegrade();
-        } else if (t instanceof ChunkLoadTask clt) {
-            clt.abandonOnDegrade();
-        }
+        t.abandonOnDegrade();
     }
 
     /**

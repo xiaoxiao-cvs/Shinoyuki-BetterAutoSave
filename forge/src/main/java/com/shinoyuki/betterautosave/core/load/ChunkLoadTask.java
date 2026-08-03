@@ -191,6 +191,7 @@ public final class ChunkLoadTask implements SaveTask {
      * 主线程 read 重读, 零数据丢失 (无存盘侧 ChunkRecoveryQueue/isUnsaved 还原的对称需求, 见设计第四节)。
      * 线程安全 (仅 CompletableFuture.completeExceptionally), 可跑在死 worker 的 uncaught handler 线程。
      */
+    @Override
     public void abandonOnDegrade() {
         result.completeExceptionally(new IllegalStateException(
                 "BetterAutoSave entered degraded mode; load task abandoned, falling back to vanilla main-thread read"));

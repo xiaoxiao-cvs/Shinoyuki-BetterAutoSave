@@ -349,7 +349,8 @@ public final class EntitySaveTask implements SaveTask {
      * 时已 inc 的 serializing 与 mustDrain gauge, 并 ERROR 明示该坐标本周期实体增量丢失, 消除"只见 degraded
      * 不知丢了哪些"的盲区。线程安全 (AtomicLong dec / 状态机单 CAS), 可在死 worker 的 uncaught handler 线程调。
      */
-    void abandonOnDegrade() {
+    @Override
+    public void abandonOnDegrade() {
         EntitySaveState state = snapshot.state();
         metrics.decInFlightSerializing();
         if (state.compareAndClearMustDrain()) {

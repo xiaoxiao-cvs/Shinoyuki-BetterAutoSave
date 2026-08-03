@@ -411,6 +411,12 @@ public final class ChunkSaveTask implements SaveTask {
      * handler 线程, setUnsaved 非线程安全; 主线程 drainChunkRecoveryQueue 还原)。terminal=true 让 drain 以 ERROR
      * 明示这是降级丢弃而非常规恢复。
      */
+    @Override
+    public void abandonOnDegrade() {
+        abandonToRecoveryOnDegrade();
+    }
+
+    /** @see #abandonOnDegrade() 接口入口, 保留本名字以便读代码时看出 chunk 的善后与其它 task 语义不同。 */
     void abandonToRecoveryOnDegrade() {
         ChunkSaveState state = snapshot.state();
         metrics.decInFlightSerializing();

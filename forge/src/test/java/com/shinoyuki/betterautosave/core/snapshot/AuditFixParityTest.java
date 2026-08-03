@@ -66,6 +66,22 @@ class AuditFixParityTest {
         return null;
     }
 
+    /** 该类自身是否声明了指定方法 (不看继承/接口默认实现)。 */
+    private boolean hasMethod(String className, String methodName) throws IOException {
+        Path classFile = mainClassesDir().resolve(className.replace('.', '/') + ".class");
+        assertTrue(Files.exists(classFile), "编译产物缺失 (先跑 compileJava): " + classFile.toAbsolutePath());
+        ClassNode node = new ClassNode();
+        try (InputStream in = Files.newInputStream(classFile)) {
+            new ClassReader(in).accept(node, 0);
+        }
+        for (MethodNode m : node.methods) {
+            if (m.name.equals(methodName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private int countCalls(MethodNode m, String calleeName) {
         int n = 0;
         for (AbstractInsnNode insn : m.instructions.toArray()) {
@@ -86,14 +102,35 @@ class AuditFixParityTest {
     }
 
     @Test
-    void m2_degraded_drain_abandons_all_three_task_types() throws IOException {
+    void m2_degraded_drain_dispatches_through_interface() throws IOException {
         // 善后路由抽到 abandonStrandedTask (drainStrandedOnDegrade 与 offer 后的 reclaimIfDegradedAfterOffer 共用)。
         MethodNode m = loadMethod("com.shinoyuki.betterautosave.core.snapshot.SnapshotPipeline",
                 "abandonStrandedTask");
-        assertTrue(countCalls(m, "abandonToRecoveryOnDegrade") >= 1,
-                "M2: degraded 善后必须对 chunk task 调 abandonToRecoveryOnDegrade 还原坐标走 vanilla 兜底");
-        assertTrue(countCalls(m, "abandonOnDegrade") >= 2,
-                "M2: degraded 善后必须对 entity + savedData task 各调 abandonOnDegrade 善后 (>=2)");
+        assertTrue(countCalls(m, "abandonOnDegrade") >= 1,
+                "M2: degraded 善后必须经 SaveTask.abandonOnDegrade 分派");
+    }
+
+    /**
+     * M2 的真正不变式: 每一个 SaveTask 实现都必须自带 abandonOnDegrade, 使接口上那个"打 ERROR"的
+     * 默认实现不可达。
+     *
+     * <p>旧版本这条测试数的是 abandonStrandedTask 里 instanceof 链的调用次数 —— 那种写法有个洞:
+     * 新增第五种 task 类型时链里没有它, 但调用次数不变, 测试照样绿, 而该类型的 task 会被静默丢弃
+     * 并被外层计入"已善后 N 个"。改为逐个实现类断言, 漏接才会被抓住。
+     */
+    @Test
+    void m2_every_save_task_implementation_overrides_abandon_on_degrade() throws IOException {
+        String[] implementations = {
+                "com.shinoyuki.betterautosave.core.snapshot.ChunkSaveTask",
+                "com.shinoyuki.betterautosave.core.snapshot.EntitySaveTask",
+                "com.shinoyuki.betterautosave.core.snapshot.SavedDataSaveTask",
+                "com.shinoyuki.betterautosave.core.load.ChunkLoadTask",
+        };
+        for (String fqcn : implementations) {
+            assertTrue(hasMethod(fqcn, "abandonOnDegrade"),
+                    "M2: " + fqcn + " 必须自行实现 abandonOnDegrade; 落到接口默认实现 = 该类型 task "
+                            + "在 degraded 时被丢弃且只有一行 ERROR");
+        }
     }
 
     @Test
