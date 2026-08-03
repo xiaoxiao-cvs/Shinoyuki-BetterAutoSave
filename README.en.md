@@ -78,6 +78,60 @@ The config file is `config/Shinoyuki-Optimize/shinoyuki_betterautosave/common.to
 
 The remaining entries (retry counts, shutdown timeout, monitoring switches, etc.) are documented by comments inside the config file.
 
+### Feature matrix across the two builds
+
+This mod ships for Forge 1.20.1 and NeoForge 1.21.1, and the two are not identical. Several gaps exist because NeoForge fixed the problem upstream, so the corresponding option is **unnecessary** on that build rather than missing:
+
+| Feature | Forge 1.20.1 | NeoForge 1.21.1 |
+|---|---|---|
+| Async saving (chunks / entities / SavedData) | yes | yes |
+| Async chunk loading (`[load]` section) | yes | **no** (the section does not exist there) |
+| level.dat registry cache | yes | not needed (upstream moved the table out of level.dat) |
+| level.dat startup check / backup / post-write verify | yes | not needed (1.21's Main already has three-level self-healing) |
+| playerdata read fallback | yes | not needed (fixed upstream in 1.21) |
+| advancements / stats atomic write | yes | yes |
+| advancements dirty skip, staggered player saving | yes | yes |
+
+### Player data (`[playerData]` section)
+
+On a heavily modded server, the autosave tick writes three files per online player: `playerdata/<uuid>.dat`, `stats/<uuid>.json` and `advancements/<uuid>.json`. Measured at roughly 6.7ms per player, which is about 400ms in a single tick at 60 players.
+
+| Field | Default | Meaning |
+|---|---|---|
+| playerData.loadFallback | true | When a player's save cannot be read, quarantine it and recover from `.dat_old` instead of letting them join as a brand new player |
+| playerData.atomicSidecarWrite | true | Write advancements and stats through a temp file and an atomic rename, keeping one `.bak` |
+| playerData.advancementsSkipMode | OFF | Skip rewriting advancements when nothing changed. See below |
+| playerData.advancementsForceFullWriteCycles | 12 | Force one full write after this many consecutive skips |
+| playerData.staggerMaxPerTick | 0 | Players written per tick; 0 = vanilla behavior (everyone in one tick) |
+
+**The first two are data-safety fixes and should stay on.** The vanilla outcome on those two paths is an emptied player inventory with no error, and a truncated advancements file that silently zeroes progress. Both are fixed upstream in 1.21; this is a backport.
+
+**`advancementsSkipMode` is the largest performance lever here.** Vanilla rebuilds and rewrites the whole advancements file on every autosave whether or not anything changed; it measures as 55% of the total player-save cost, and on a 137-mod production server it almost never changes (across three consecutive autosaves the online players' files were byte-identical). Roll it out the same way as the registry cache: set `AUDIT`, run for a few days, confirm no `MISMATCH` in the log, then set `ON`.
+
+**`staggerMaxPerTick` changes no data-safety property** - every player is still written exactly once per autosave period, so the worst-case staleness window is unchanged; only the moment each write happens moves. Suggested values are 1 or 2; at 60 players, one per tick drains in 3 seconds, well inside the 5-minute period. `/save-all`, shutdown and player disconnect all bypass staggering and flush immediately.
+
+> Note: while staggering, vanilla's "currently saving" flag is false, so a mod that keys off it will not observe these writes.
+
+### level.dat integrity (`[levelData]` section)
+
+| Field | Default | Meaning |
+|---|---|---|
+| levelData.verifyOnStartup | true | Check level.dat at startup; if broken, quarantine it and restore from `level.dat_old` |
+| levelData.startupBackup | true | After a successful check, keep a copy under `<world>/betterautosave/leveldat/`, 3 generations |
+| levelData.postWriteVerify | CHECKSUM | Read level.dat back on a worker thread after each write. OFF / CHECKSUM / FULL |
+
+Vanilla keeps exactly one spare copy, `level.dat_old`, and rotates it on every write - one boot with a damaged file consumes it. Worse, the vanilla fallback only fires when the file is **missing**; when it **exists but is unreadable**, a dedicated server throws and prints a message pointing at datapacks before exiting. There is a quieter case too: a structurally valid file missing a single `DataVersion` integer makes the server **start successfully** with seed 0, default spawn and default gamerules, while the terrain files are still the old ones.
+
+> BAS's startup backups are **never restored automatically**, and vanilla does not know they exist. Automatic repair only ever uses `level.dat_old` (at most one save cycle back). To roll back to a startup copy, BAS prints the available copies and the exact command for you to run with the server stopped - because such a rollback rewinds world time, weather, gamerules, world border and dragon-fight progress, and remaps block IDs if the mod set changed in between.
+
+### Working with backup tools
+
+Now that BAS writes chunks asynchronously, the return of `/save-all flush` (and the `Saved the game` console line) **no longer means the data is fully on disk**. An external backup tool that keys off that line gets a premature signal.
+
+In-process mods should use BAS's `SaveCoordination` API for an accurate state. For external scripts, wait for BAS's own `/betterautosave flush` completion message instead.
+
+> Vanilla's plain `/save-all` (without `flush`) never guaranteed durability either - chunks go to the background IO worker and entities only get an incremental save. Only `/save-all flush` carried that promise, and only it is affected here.
+
 ### Compatibility level: eventCompatMode
 
 A few mods listen to the "chunk save" event. This switch controls how complete the data BAS hands them is:
@@ -118,7 +172,7 @@ Three independent layers invalidate the cache, any one of which triggers a rebui
 
 > NeoForge note: this option does not exist on the NeoForge build. NeoForge removed the registry ID table from `level.dat` upstream, so there is nothing to cache and no such spike.
 
-### Async chunk loading (experimental, off by default)
+### Async chunk loading (experimental, off by default, Forge build only)
 
 > Back up your entire world folder before enabling this. It is experimental and changes the chunk *loading* path — moving the step that parses save bytes into game objects (deserialization) onto background threads. By design, even if background parsing fails it falls back to re-reading the same bytes on the main thread and loses no data; but any feature that touches the loading path may hit an edge case not covered under your specific mod combination. Backing up first is taking responsibility for your own saves.
 
