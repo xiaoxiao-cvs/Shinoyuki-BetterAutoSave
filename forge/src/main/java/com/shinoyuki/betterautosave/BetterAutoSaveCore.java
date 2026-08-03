@@ -2,6 +2,7 @@ package com.shinoyuki.betterautosave;
 
 import com.shinoyuki.betterautosave.core.io.AsyncIoBridge;
 import com.shinoyuki.betterautosave.core.leveldat.RegistryTagCache;
+import com.shinoyuki.betterautosave.core.playerdata.PlayerSaveStagger;
 import com.shinoyuki.betterautosave.core.scheduler.SaveScheduler;
 import com.shinoyuki.betterautosave.core.snapshot.SnapshotPipeline;
 import com.shinoyuki.betterautosave.diagnostic.ChunkLatencyTracker;
@@ -19,6 +20,15 @@ public final class BetterAutoSaveCore {
     private static volatile PrometheusExporter EXPORTER;
     private static volatile ChunkLatencyTracker LATENCY_TRACKER;
     private static volatile RegistryTagCache REGISTRY_TAG_CACHE;
+    private static volatile PlayerSaveStagger PLAYER_SAVE_STAGGER;
+
+    /**
+     * 是否正处于 autosave 触发的 saveEverything 窗口内。由 MinecraftServerMixin 在
+     * saveEverything 的 HEAD/RETURN 置位与清除, 供玩家存盘错峰判断"这次是不是 autosave"。
+     *
+     * <p>只在主线程读写 (saveEverything 与 saveAll 都在主线程), 用 volatile 只为可见性直白。
+     */
+    private static volatile boolean IN_AUTOSAVE_WINDOW;
 
     public static void install(SaveMetrics metrics,
                                SaveScheduler scheduler,
@@ -41,6 +51,24 @@ public final class BetterAutoSaveCore {
         EXPORTER = null;
         LATENCY_TRACKER = null;
         REGISTRY_TAG_CACHE = null;
+        PLAYER_SAVE_STAGGER = null;
+        IN_AUTOSAVE_WINDOW = false;
+    }
+
+    public static void setPlayerSaveStagger(PlayerSaveStagger stagger) {
+        PLAYER_SAVE_STAGGER = stagger;
+    }
+
+    public static PlayerSaveStagger playerSaveStagger() {
+        return PLAYER_SAVE_STAGGER;
+    }
+
+    public static void setInAutosaveWindow(boolean value) {
+        IN_AUTOSAVE_WINDOW = value;
+    }
+
+    public static boolean isInAutosaveWindow() {
+        return IN_AUTOSAVE_WINDOW;
     }
 
     /**

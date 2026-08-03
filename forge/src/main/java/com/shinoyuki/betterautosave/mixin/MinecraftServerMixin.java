@@ -1,15 +1,21 @@
 package com.shinoyuki.betterautosave.mixin;
 
 import com.shinoyuki.betterautosave.BetterAutoSaveCore;
+import com.shinoyuki.betterautosave.config.BetterAutoSaveConfig;
+import com.shinoyuki.betterautosave.core.playerdata.PlayerListSaveAccess;
+import com.shinoyuki.betterautosave.core.playerdata.PlayerSaveStagger;
 import com.shinoyuki.betterautosave.core.scheduler.SaveScheduler;
 import com.shinoyuki.betterautosave.diagnostic.DiagnosticLogger;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.players.PlayerList;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.function.BooleanSupplier;
 
@@ -55,11 +61,38 @@ public abstract class MinecraftServerMixin {
         }
     }
 
+    @Shadow
+    public abstract PlayerList getPlayerList();
+
+    /**
+     * 2c: 记录"这次 saveEverything 是不是 autosave"。玩家存盘错峰只允许在 autosave 路径发生。
+     *
+     * <p>判据来自参数本身: autosave 是 {@code saveEverything(true, false, false)};
+     * {@code /save-all} 的 forced=true; {@code /save-all flush} 的 flush=true。关服的
+     * {@code stopServer} 直接调 {@code playerList.saveAll()} 不经本方法, 故窗口标志保持 false,
+     * 天然不错峰。
+     */
+    @Inject(method = "saveEverything", at = @At("HEAD"))
+    private void betterautosave$beginSaveWindow(boolean suppressLog, boolean flush, boolean forced,
+                                                CallbackInfoReturnable<Boolean> cir) {
+        BetterAutoSaveCore.setInAutosaveWindow(!flush && !forced);
+    }
+
+    @Inject(method = "saveEverything", at = @At("RETURN"))
+    private void betterautosave$endSaveWindow(boolean suppressLog, boolean flush, boolean forced,
+                                              CallbackInfoReturnable<Boolean> cir) {
+        BetterAutoSaveCore.setInAutosaveWindow(false);
+    }
+
     @Inject(method = "tickServer", at = @At("TAIL"))
     private void betterautosave$onTickServer(BooleanSupplier hasMoreTime, CallbackInfo ci) {
         if (!BetterAutoSaveCore.isInstalled()) {
             return;
         }
+
+        // 2c: 每 tick 消化几个待存玩家。与 degraded 闸门解耦 —— 它跟 BAS 的异步管线无关,
+        // 走的仍是 vanilla 的同步 save(ServerPlayer), 只是把时刻摊开。
+        betterautosave$drainStaggeredPlayerSaves();
 
         // 恢复队列 drain 必须与 degraded 闸门解耦, 先于早返执行.
         // 降级后存活的 chunk worker 与 vanilla IOWorker 回调线程上的在途 task 仍会执行, 其 IO 失败
@@ -84,5 +117,26 @@ public abstract class MinecraftServerMixin {
         if (diag != null) {
             diag.onServerTick();
         }
+    }
+
+    /**
+     * 每 tick 消化至多 staggerMaxPerTick 个待存玩家。
+     *
+     * <p>走的是 vanilla 的 {@code PlayerList.save(ServerPlayer)} 本身 (经 accessor 接口),
+     * 因此 Forge 那句跳过 FakePlayer 的 {@code if (connection == null) return;} 早退自然保留。
+     */
+    @Unique
+    private void betterautosave$drainStaggeredPlayerSaves() {
+        PlayerSaveStagger stagger = BetterAutoSaveCore.playerSaveStagger();
+        if (stagger == null || stagger.isEmpty()) {
+            return;
+        }
+        int maxPerTick = BetterAutoSaveConfig.playerDataStaggerMaxPerTick();
+        if (maxPerTick <= 0) {
+            // 运行期关掉了错峰: 把积压一次写完, 不留尾巴。
+            ((PlayerListSaveAccess) getPlayerList()).betterautosave$saveBatch(stagger.drainAll());
+            return;
+        }
+        ((PlayerListSaveAccess) getPlayerList()).betterautosave$saveBatch(stagger.takeUpTo(maxPerTick));
     }
 }

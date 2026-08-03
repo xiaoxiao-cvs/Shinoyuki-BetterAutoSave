@@ -52,6 +52,7 @@ public final class ConfigSpec {
     public static final ForgeConfigSpec.BooleanValue PLAYER_DATA_ATOMIC_SIDECAR_WRITE;
     public static final ForgeConfigSpec.EnumValue<AdvancementsSkipMode> PLAYER_DATA_ADVANCEMENTS_SKIP_MODE;
     public static final ForgeConfigSpec.IntValue PLAYER_DATA_ADVANCEMENTS_FORCE_FULL_WRITE_CYCLES;
+    public static final ForgeConfigSpec.IntValue PLAYER_DATA_STAGGER_MAX_PER_TICK;
     public static final ForgeConfigSpec.BooleanValue LOAD_ENABLED;
     public static final ForgeConfigSpec.EnumValue<LoadCompatMode> LOAD_EVENT_COMPAT_MODE;
     public static final ForgeConfigSpec.IntValue LOAD_MAX_RETRIES;
@@ -375,6 +376,30 @@ public final class ConfigSpec {
                          "player, so 11 of every 12 are free. Set 0 to never force a write (only do that once AUDIT",
                          "has run clean for a long time).")
                 .defineInRange("advancementsForceFullWriteCycles", 12, 0, 1000);
+
+        PLAYER_DATA_STAGGER_MAX_PER_TICK = BUILDER
+                .comment("Spread the autosave's player writes across ticks instead of doing all of them in one.",
+                         "0 (default) keeps vanilla behavior: everyone is written in the single autosave tick.",
+                         "",
+                         "PlayerList.saveAll is a bare loop that writes every online player during the one tick where",
+                         "tickCount % autosavePeriod == 0. Measured at roughly 6.7ms per player on a 137-mod server,",
+                         "which is about 27ms at 4 players and extrapolates to some 400ms at 60 - a periodic spike",
+                         "rather than a throughput problem.",
+                         "",
+                         "WHY THIS IS NOT A DATA-SAFETY TRADE: every player is still written exactly once per",
+                         "autosave period, so the worst-case staleness window is completely unchanged. Only the",
+                         "moment each player is written moves. No threads, no change to write ordering, no effect on",
+                         "/save-off, shutdown, or the disconnect path - all of which bypass staggering and flush any",
+                         "queued players first. Paper has shipped the same idea since 2019 and Sponge has its own.",
+                         "",
+                         "Suggested values: 1 or 2. Do not copy Paper's default here - its maxPerTick() actually",
+                         "returns 20 under the stock rate=-1 config, and 20 players per tick on a heavy modpack is",
+                         "already over 100ms, which defeats the purpose. With 1 per tick, 60 players drain in 3",
+                         "seconds, far inside the 5-minute period.",
+                         "",
+                         "COMPAT WARNING: while draining, MinecraftServer.isSaving is false. A mod that relies on",
+                         "that flag to detect 'a save is in progress' will not see the staggered writes.")
+                .defineInRange("staggerMaxPerTick", 0, 0, 64);
 
         BUILDER.pop();
 

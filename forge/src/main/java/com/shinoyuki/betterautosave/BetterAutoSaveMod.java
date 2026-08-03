@@ -7,6 +7,7 @@ import com.shinoyuki.betterautosave.config.ConfigSpec;
 import com.shinoyuki.betterautosave.core.dispatch.SaveDispatcher;
 import com.shinoyuki.betterautosave.core.io.AsyncIoBridge;
 import com.shinoyuki.betterautosave.core.leveldat.RegistryTagCache;
+import com.shinoyuki.betterautosave.core.playerdata.PlayerSaveStagger;
 import com.shinoyuki.betterautosave.core.scheduler.SaveScheduler;
 import com.shinoyuki.betterautosave.core.snapshot.SnapshotPipeline;
 import com.shinoyuki.betterautosave.diagnostic.ChunkLatencyTracker;
@@ -87,6 +88,9 @@ public final class BetterAutoSaveMod {
         // 上一轮的缓存不会跨 server 实例复用。
         BetterAutoSaveCore.setRegistryTagCache(
                 RegistryTagCache.production(BetterAutoSaveConfig::levelDataRegistryCacheRevalidateCycles));
+        // 2c: 玩家存盘错峰队列。绑 server 生命周期, 关服随 uninstall 清空 —— 残留的 UUID
+        // 跨 server 实例没有意义。
+        BetterAutoSaveCore.setPlayerSaveStagger(new PlayerSaveStagger());
         LOGGER.info("[BetterAutoSave]   |- workers: chunk={} entity={}",
                 BetterAutoSaveConfig.workerThreads(), BetterAutoSaveConfig.entityWorkerThreads());
         LOGGER.info("[BetterAutoSave]   |- throttle: base={}/tick adaptive={} guard={}s",
