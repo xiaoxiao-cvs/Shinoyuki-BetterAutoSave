@@ -15,235 +15,94 @@
 
 A vanilla Minecraft server autosaves every 5 minutes. During that save, the main thread has to serialize every modified chunk and write it to disk — and the whole server is frozen while it happens. On an empty server you will not notice, but on a server with many mods and players this pause is routinely 200 ms to several seconds, and every player lags at once.
 
-Besides the periodic autosave, several other moments stutter the same way:
+Besides the periodic autosave, several other moments stutter the same way: players teleporting or large numbers of chunks being unloaded (a chunk must be saved before it leaves memory), entity-dense areas during a save (large farms / mob grinders), and global data such as villages and raids (vanilla SavedData) where a single large file hits the disk.
 
-- Players teleporting, or large numbers of chunks being unloaded (a chunk must be saved before it leaves memory)
-- Entity-dense areas during a save (large farms / mob grinders) — saving entities one by one adds extra stalls
-- Villages, raids and other global data (vanilla SavedData), plus large data some mods store through the same mechanism, being written to disk — a single large file can stall 50-200 ms
+BAS makes the main thread do only the one thing that must happen in place — taking an independent snapshot of the data to be saved. Serialization and disk IO are handed to background threads. Because the background works on copies, it never interferes with the main thread, which lets go immediately after the snapshot. Chunks, entities and saved data all go through this pipeline. When the server is struggling BAS automatically slows down, but forces full speed as the next autosave cycle approaches so a backlog can never build up.
 
-BAS moves the whole saving process to background threads. The main thread only does the one thing that must happen in place — taking a snapshot of the data to be saved. Serialization and disk IO are handed to the background. The stutter essentially disappears.
+## Requirements and installation
 
-
-## Requirements
-
-Both loaders are maintained from the same source; pick the jar matching your server:
+Both loaders are maintained from the same source. Server-side only on both; clients do not need to install it.
 
 - **Forge 1.20.1**: Forge 47.3.22 or newer (47.3 / 47.4 lines both work), Java 17 or newer
 - **NeoForge 1.21.1**: NeoForge 21.1 line, Java 21 or newer
 
-Server-side only on both; clients do not need to install it.
+Download the jar matching your loader from [Modrinth](https://modrinth.com/mod/shinoyuki-betterautosave) or Releases and drop it into the server's `mods/` folder:
 
-## Installation
+- **For Forge, use the `-all` jar** (named like `shinoyuki_betterautosave-<version>-all.jar`; it bundles MixinExtras and other dependencies). The plain thin jar crashes on load for missing dependencies.
+- **For NeoForge**, use `shinoyuki_betterautosave-neoforge-<version>.jar`.
 
-Download the jar matching your loader from [Modrinth](https://modrinth.com/mod/shinoyuki-betterautosave) or Releases — **for Forge, use the `-all` jar** (named like `shinoyuki_betterautosave-<version>-all.jar`; it bundles MixinExtras and other dependencies, while the plain thin jar crashes on load for missing dependencies), **for NeoForge** use `shinoyuki_betterautosave-neoforge-<version>.jar` — then drop it into the server's `mods/` folder and start. After the first launch the config file is generated at:
-
-```
-config/Shinoyuki-Optimize/shinoyuki_betterautosave/common.toml
-```
-
-The defaults work out of the box; most servers do not need to change anything.
+After the first launch the config file is generated at `config/Shinoyuki-Optimize/shinoyuki_betterautosave/common.toml`. The defaults work out of the box; most servers do not need to change anything.
 
 ## Will it lose world data?
 
-No. BAS is designed on one premise: it must never be less safe than vanilla:
+No. BAS is designed on one premise: it must never be less safe than vanilla.
 
-- On shutdown it waits for every pending save to hit the disk before letting the server exit.
-- The final save at shutdown goes through the vanilla synchronous path, exactly as if BAS were not installed.
-- BAS never "holds saves for later" — a chunk enters background processing the moment it should be saved. There is no "nothing saved for minutes, crash loses it all" window (some similar mods have this problem, see compatibility below).
-- If a background write fails it retries automatically and never pretends it succeeded: for chunks and saved data (SavedData) an exhausted retry falls back to the vanilla synchronous write (the chunk must still be loaded); entities have no coordinate recovery queue and are already evicted from memory by vanilla, so an exhausted retry logs an ERROR and drops that chunk's latest entity increment — the same outcome as vanilla here (vanilla entity saving likewise has no retry and no synchronous fallback; BAS actually retries a few more times first).
+- On shutdown it waits for every pending save to hit the disk before letting the server exit, and the final save goes through the vanilla synchronous path.
+- BAS never "holds saves for later" — a chunk enters background processing the moment it should be saved. There is no "nothing saved for minutes, crash loses it all" window (some similar mods have this problem).
+- If a background write fails it retries automatically and never pretends it succeeded: chunks and saved data fall back to the vanilla synchronous write once retries are exhausted; entities have no coordinate recovery queue and are already evicted from memory by vanilla, so an exhausted retry logs an ERROR and drops that chunk's latest entity increment — the same outcome as vanilla here (vanilla entity saving likewise has no retry and no synchronous fallback; BAS actually retries a few more times first).
 
-## How it works (optional reading)
+Beyond that, the Forge build also fixes three vanilla paths that silently lose data (player data read failure, truncating writes for advancements and stats, and `level.dat` having only a single backup). Those fixes are on by default — see the [configuration reference](docs/CONFIGURATION.en.md).
 
-Vanilla saves stutter because two heavy jobs sit on the main thread: serializing world data into the save format, and writing the serialized data to disk.
-
-BAS makes the main thread do only the snapshot — copying the chunk's current blocks, light, block entities and so on into an independent copy. This step is fast because it is just a copy, no format conversion. Once copied, the main thread immediately goes back to running the game while background threads take the copy through serialization and disk IO.
-
-Because the background threads operate on copies, they never interfere with the main thread; after the snapshot the main thread lets go without waiting for the write. Chunks, entities and saved data all go through this pipeline.
-
-When the server is struggling, BAS automatically slows down (fewer snapshots per tick once TPS drops below a threshold), but forces full speed as the next autosave cycle approaches so a backlog can never build up.
-
-## Configuration
-
-The config file is `config/Shinoyuki-Optimize/shinoyuki_betterautosave/common.toml`. Common entries:
+## Common configuration
 
 | Key | Default | Description |
 |---|---|---|
-| general.enabled | true | Master switch; off means vanilla behavior, as if not installed |
-| throttle.chunksPerTickBase | 4 | Max chunks snapshotted by the main thread per game tick |
-| throttle.adaptiveEnabled | true | Slow down automatically when the server struggles; keep it on |
-| workers.chunkWorkerThreads | 2 | Background threads for chunks |
-| workers.entityWorkerThreads | 2 | Background threads for entities |
-| workers.savedDataWorkerThreads | 1 | Background threads for saved data; raise to 2 with mods that write a lot of vanilla SavedData |
-| compat.eventCompatMode | PARTIAL | Compatibility level, see below |
+| `general.enabled` | true | Master switch; off means vanilla behavior, as if not installed |
+| `throttle.chunksPerTickBase` | 4 | Max chunks snapshotted by the main thread per game tick |
+| `throttle.adaptiveEnabled` | true | Slow down automatically when the server struggles; keep it on |
+| `workers.chunkWorkerThreads` | 2 | Background threads for chunks |
+| `workers.entityWorkerThreads` | 2 | Background threads for entities |
+| `workers.savedDataWorkerThreads` | 1 | Background threads for saved data; raise to 2 with mods that write a lot of vanilla SavedData |
+| `compat.eventCompatMode` | PARTIAL | Event compatibility level; leave it alone unless you know you need it |
 
-The remaining entries (retry counts, shutdown timeout, monitoring switches, etc.) are documented by comments inside the config file.
+The Forge build has 35 settings, the NeoForge build 18. **Every setting, why each default is what it is, and the recommended rollout path are documented in [CONFIGURATION.en.md](docs/CONFIGURATION.en.md)**, covering player data protection, `level.dat` integrity, async chunk loading, Prometheus monitoring and working with backup tools.
 
-### Feature matrix across the two builds
+## Feature matrix across the two builds
 
-This mod ships for Forge 1.20.1 and NeoForge 1.21.1, and the two are not identical. Several gaps exist because NeoForge fixed the problem upstream, so the corresponding option is **unnecessary** on that build rather than missing:
+The two builds are not identical. Some gaps exist because NeoForge fixed the problem upstream, so the corresponding option is unnecessary there; others are Forge-first and not yet ported symmetrically.
 
 | Feature | Forge 1.20.1 | NeoForge 1.21.1 |
 |---|---|---|
 | Async saving (chunks / entities / SavedData) | yes | yes |
-| Async chunk loading (`[load]` section) | yes | **no** (the section does not exist there) |
+| Async chunk loading (`[load]` section) | yes | no (the section does not exist; the NeoForge build has no load-side mixins at all) |
 | level.dat registry cache | yes | not needed (upstream moved the table out of level.dat) |
-| level.dat startup check / backup / post-write verify | yes | not needed (1.21's Main already has three-level self-healing) |
+| level.dat startup check | yes | not needed (1.21 already falls back and quarantines on a read failure) |
+| level.dat startup backup / post-write verify | yes | no (1.21 has no equivalent either; port pending) |
 | playerdata read fallback | yes | not needed (fixed upstream in 1.21) |
-| advancements / stats atomic write | yes | yes |
-| advancements dirty skip, staggered player saving | yes | yes |
+| advancements / stats atomic write | yes | no (1.21 still truncates on write; port pending) |
+| advancements dirty skip, staggered player saving | yes | no (performance only; port pending) |
 
-### Player data (`[playerData]` section)
+## In-game commands
 
-On a heavily modded server, the autosave tick writes three files per online player: `playerdata/<uuid>.dat`, `stats/<uuid>.json` and `advancements/<uuid>.json`. Measured at roughly 6.7ms per player, which is about 400ms in a single tick at 60 players.
-
-| Field | Default | Meaning |
-|---|---|---|
-| playerData.loadFallback | true | When a player's save cannot be read, quarantine it and recover from `.dat_old` instead of letting them join as a brand new player |
-| playerData.atomicSidecarWrite | true | Write advancements and stats through a temp file and an atomic rename, keeping one `.bak` |
-| playerData.sidecarFsync | false | Also fsync those writes. The cost lands on the main thread and scales with player count (120 flushes per autosave at 60 players); vanilla does no fsync on this path and ext4's default mode already implies the ordering, so this ships off |
-| playerData.advancementsSkipMode | OFF | Skip rewriting advancements when nothing changed. See below |
-| playerData.advancementsForceFullWriteCycles | 12 | Force one full write after this many consecutive skips |
-| playerData.staggerMaxPerTick | 0 | Players written per tick; 0 = vanilla behavior (everyone in one tick) |
-
-**The first two are data-safety fixes and should stay on.** The vanilla outcome on those two paths is an emptied player inventory with no error, and a truncated advancements file that silently zeroes progress. Both are fixed upstream in 1.21; this is a backport.
-
-**`advancementsSkipMode` is the largest performance lever here.** Vanilla rebuilds and rewrites the whole advancements file on every autosave whether or not anything changed; it measures as 55% of the total player-save cost, and on a 137-mod production server it almost never changes (across three consecutive autosaves the online players' files were byte-identical). Roll it out the same way as the registry cache: set `AUDIT`, run for a few days, confirm no `MISMATCH` in the log, then set `ON`.
-
-**`staggerMaxPerTick` changes no data-safety property** - every player is still written exactly once per autosave period, so the worst-case staleness window is unchanged; only the moment each write happens moves. Suggested values are 1 or 2; at 60 players, one per tick drains in 3 seconds, well inside the 5-minute period. `/save-all`, shutdown and player disconnect all bypass staggering and flush immediately.
-
-> Note: while staggering, vanilla's "currently saving" flag is false, so a mod that keys off it will not observe these writes.
-
-### level.dat integrity (`[levelData]` section)
-
-| Field | Default | Meaning |
-|---|---|---|
-| levelData.verifyOnStartup | true | Check level.dat at startup; if broken, quarantine it and restore from `level.dat_old` |
-| levelData.startupBackup | true | After a successful check, keep a copy under `<world>/betterautosave/leveldat/`, 3 generations |
-| levelData.postWriteVerify | CHECKSUM | Read level.dat back on a worker thread after each write. OFF / CHECKSUM / FULL |
-
-Vanilla keeps exactly one spare copy, `level.dat_old`, and rotates it on every write - one boot with a damaged file consumes it. Worse, the vanilla fallback only fires when the file is **missing**; when it **exists but is unreadable**, a dedicated server throws and prints a message pointing at datapacks before exiting. There is a quieter case too: a structurally valid file missing a single `DataVersion` integer makes the server **start successfully** with seed 0, default spawn and default gamerules, while the terrain files are still the old ones.
-
-> BAS's startup backups are **never restored automatically**, and vanilla does not know they exist. Automatic repair only ever uses `level.dat_old` (at most one save cycle back). To roll back to a startup copy, BAS prints the available copies and the exact command for you to run with the server stopped - because such a rollback rewinds world time, weather, gamerules, world border and dragon-fight progress, and remaps block IDs if the mod set changed in between.
-
-### Working with backup tools
-
-Now that BAS writes chunks asynchronously, the return of `/save-all flush` (and the `Saved the game` console line) **no longer means the data is fully on disk**. An external backup tool that keys off that line gets a premature signal.
-
-In-process mods should use BAS's `SaveCoordination` API for an accurate state. For external scripts, wait for BAS's own `/betterautosave flush` completion message instead.
-
-> Vanilla's plain `/save-all` (without `flush`) never guaranteed durability either - chunks go to the background IO worker and entities only get an incremental save. Only `/save-all flush` carried that promise, and only it is affected here.
-
-### Compatibility level: eventCompatMode
-
-A few mods listen to the "chunk save" event. This switch controls how complete the data BAS hands them is:
-
-- **PARTIAL (default, recommended)**: best performance, 99% of mods cannot tell the difference.
-- **FULL**: 100% identical to vanilla, at half the performance. Only switch here when a specific mod demonstrably errors because it cannot read chunk block data.
-- **DISABLED**: never dispatch the event at all; cheapest, provided you are sure no mod listens to it.
-
-When unsure, stay on PARTIAL.
-
-> Note: under PARTIAL/DISABLED, BAS assembles sections itself and never calls vanilla `ChunkSerializer.write`. If a mod injects custom chunk data by mixing into `ChunkSerializer.write` directly (rather than via `ChunkDataEvent.Save` or Forge capabilities — both still honored under PARTIAL), its serialization is bypassed and that data is silently dropped on every save with no error. Switch to FULL if you run such a mod.
-
-### level.dat registry cache (experimental, off by default, Forge build only)
-
-On a heavily modded server, a spark MSPT graph will usually show **an evenly spaced spike every 5 minutes**, even with nobody online. That is not chunk saving — it is vanilla unconditionally rewriting `level.dat` on every autosave. Once you have a lot of mods, almost all of that file is Forge's registry ID table, and it is rebuilt from scratch and re-compressed every single time.
-
-Measured on a 137-mod 1.20.1 production server:
-
-| Item | Measured |
-|---|---|
-| level.dat, uncompressed | 1,234,370 bytes |
-| of which the registry ID table (`fml/Registries`) | 1,215,091 bytes (**98.4%**, 17 registries / 26,648 ids) |
-| Byte-diff of two level.dat files 5 minutes apart | only **5 bytes** differ, all in the world-data section; the 1.22 MB registry block is **byte-identical** |
-| Main-thread cost of rebuilding that table | roughly 25ms per autosave |
-
-In other words, the thing being recomputed every 5 minutes comes out identical to last time. With this option on, BAS caches it and reuses it.
-
-| Field | Default | Meaning |
-|---|---|---|
-| levelData.cacheRegistrySnapshot | false | Master switch. Hot-reloadable; turning it off drops the cache immediately |
-| levelData.registryCacheRevalidateCycles | 12 | After this many cache hits, force one full rebuild and compare it against the cache tag by tag. A mismatch logs an ERROR and the freshly computed value is used. 12 is roughly one verification per hour |
-
-**Off by default on purpose.** What this saves is a periodic ~25ms main-thread spike, not a throughput problem — TPS usually does not drop at all. So it ships opt-in until it has been proven on real modpacks. Recommended way to enable it: set `registryCacheRevalidateCycles` to `1` first (verify on every write — no speedup, pure audit mode), run for a few days and confirm no `MISMATCH` appears in the log, then set it back to `12` to collect the benefit.
-
-Three independent layers invalidate the cache, any one of which triggers a rebuild: Forge's `IdMappingEvent`, a per-write fingerprint of every persisted registry (entry count plus locked state), and the periodic full recompute above.
-
-> Note: on a cache hit, the whole of `ForgeHooks.writeAdditionalLevelSaveData` is skipped, so any other mod injecting into that method is skipped too. No such mod is known (the method is `@ApiStatus.Internal` with a single caller), and the cached content already includes whatever such a mod contributed on the build pass, so a constant contribution is equivalent. A time-varying one would be reported by the periodic comparison as a `MISMATCH`. If you see `MISMATCH`, turn this off and file an issue.
-
-> NeoForge note: this option does not exist on the NeoForge build. NeoForge removed the registry ID table from `level.dat` upstream, so there is nothing to cache and no such spike.
-
-### Async chunk loading (experimental, off by default, Forge build only)
-
-> Back up your entire world folder before enabling this. It is experimental and changes the chunk *loading* path — moving the step that parses save bytes into game objects (deserialization) onto background threads. By design, even if background parsing fails it falls back to re-reading the same bytes on the main thread and loses no data; but any feature that touches the loading path may hit an edge case not covered under your specific mod combination. Backing up first is taking responsibility for your own saves.
-
-When vanilla loads a chunk, the step that parses the on-disk save bytes into game objects sits on the main thread. With a large view distance, or players moving fast / teleporting, this step becomes a main-thread burden. With async loading enabled, BAS moves parsing to background threads too; the main thread only does the parts that must happen in place (POI consistency, lighting, load-event replay), and the freed main-thread time turns into more TPS headroom. This pays off most on "view distance 10-12 + multiplayer" production servers; pure single-player extreme flying (view distance maxed) hits the ceiling of vanilla's single-threaded chunk pipeline, which async parsing cannot help with.
-
-Off by default; enable it manually in the config. The relevant settings are in the `[load]` section (thread count in `[workers]`):
-
-| Key | Default | Description |
-|---|---|---|
-| load.enabled | false | Master switch for async loading, independent of the save side's `general.enabled` |
-| load.loadEventCompatMode | PARTIAL | Split level: PARTIAL = parsing on the background, POI / lighting / events back on the main thread; FULL = the whole parse stays on the main thread (equivalent to this feature off, zero behavior difference — a fallback when a mod is incompatible). No DISABLED state (load events must be dispatched on the main thread) |
-| load.maxInFlight | 128 | Cap on parse tasks submitted to the background at once. Prevents a batch of chunks finishing together and replaying into the same tick as a momentary stall. Higher = more throughput but larger per-tick bursts; lower = smoother but chunks arrive slower. Raise it per server until bursts reappear |
-| load.loadMaxRetries | 1 | Retries when background parsing throws; once exhausted it falls back to vanilla main-thread reading (no data loss) |
-| workers.loadWorkerThreads | 2 | Background threads for async loading. Parsing is essentially a single-thread bottleneck; 2 is enough, raising it mostly wastes |
-
-If something goes wrong, set `load.enabled` back to `false`, or switch `loadEventCompatMode` to `FULL`, to return to vanilla loading behavior immediately (config hot-reload, no restart needed).
-
-> Note: `load.enabled` only takes effect at startup — while off, the async-load mixins are not injected at all (so they cannot clash at startup with mods that rewrite the load path, e.g. C2ME), which means turning it from off to on requires a server restart (turning it back off hot-reloads instantly). Once on, chunk deserialization runs on a background thread: vanilla and ordinary mods that use ForgeCaps / events are safe, but a mod that mixes into `ChunkSerializer.read` directly and assumes the main thread (writing a non-concurrent collection, firing a main-thread-only event) can silently misbehave without triggering the fallback. If unsure, keep it off or use `loadEventCompatMode=FULL`.
-
-## In-game commands (OP required)
+Requires OP (permission level 2).
 
 | Command | Effect |
 |---|---|
 | `/betterautosave status` | One-line current status |
 | `/betterautosave metrics` | One-line metrics summary |
 | `/betterautosave debug` | Full diagnostics: queue depths, per-stage timings, counters |
-| `/betterautosave flush` | Synchronously flush every pending save to disk right now |
-| `/betterautosave drain-unload` | Manually wait for all pending chunks to land before shutdown |
-| `/betterautosave hottest-chunks [count]` | List the slowest-saving chunks (default 10, max 50) to locate hotspots |
+| `/betterautosave flush` | Drain every pending save to disk. The command returns immediately and polls in the background until it completes or times out (`safety.shutdownTimeoutSeconds`) |
+| `/betterautosave drain-unload` | Wait for all pending chunks to land; likewise polls in the background and returns immediately |
+| `/betterautosave hottest-chunks [count]` | List the slowest-saving chunks (default 10, accepts 1-50) to locate hotspots |
 | `/betterautosave force-async` | Force one background save pass over all chunks in the current dimension (diagnostic) |
 
-## Monitoring (v0.9, optional)
-
-v0.9 added two diagnostic tools so you can see save performance without an external profiler.
-
-**The hottest-chunks command** lists the slowest chunks by save time, highest first:
-
-```
-/betterautosave hottest-chunks 20
-```
-
-High-cost chunks usually sit where block entities are dense — large automated farms, mod shop panels, complex redstone. Once you know the exact position you can optimize it directly.
-
-**The Prometheus metrics endpoint** (off by default) serves a `/metrics` page on the configured port. Hooked into Grafana it gives you long-term save-performance trends, far more convenient than repeatedly running `/betterautosave debug`. Enable it in the config:
-
-```toml
-[prometheus]
-enabled = true
-port = 9450
-```
-
-Security note: the port listens on `0.0.0.0` by default. On public servers (cloud / VPS), firewall port 9450 or set `bindAddress` to `127.0.0.1` to allow local connections only. The metrics contain no player privacy, but they do expose the server's activity patterns.
+High-cost chunks usually sit where block entities are dense — large automated farms, mod shop panels, complex redstone.
 
 ## Mod conflicts
 
-- **Smooth Chunk Save**: pick one. Both modify the chunk-unload save path. Compared to it, BAS does not delay disk writes (no data-loss window), does not cancel vanilla periodic autosaves and does not swallow exceptions.
-- **C2ME-Forge / C2ME**: split it by feature. Its IO / save-side features (async saving `ioSystem.async`, the serializer rewrite `gcFreeChunkSerializer`) take over the same save path as BAS, so those are pick-one; its **parallel loading** is complementary and does not conflict under BAS's default config (`load.enabled=false`), but once you enable BAS's async loading (`load.enabled=true`, since 0.16.0) both rewrite chunk-load scheduling, so the load path becomes pick-one too; its worldgen / `midTickChunkTasksInterval` are always complementary (BAS never touches worldgen or the ChunkStatus upgrade chain). To run both: turn off C2ME's IO / save-side features and set `autoSave` to `VANILLA` — BAS owns saving, C2ME owns loading; if you also want BAS async loading, additionally turn off C2ME's parallel loading so BAS owns saving + loading and C2ME owns only worldgen. C2ME-Forge is no longer maintained, so the overlap is rare in practice.
-- **Fast Async World Save (`fastasyncworldsave`) / SmoothChunkSave and other async / per-tick save mods**: they take over the same `ChunkMap.save` / `saveAllChunks` path as BAS — structurally pick-one, do not install together. Installed together, mixin priority decides who cancels first, the other silently stops working, and save semantics can corrupt under extreme interleaving. BAS logs a WARN at startup if it detects `fastasyncworldsave` (others like SmoothChunkSave are disclosed here by name rather than hardcoding every modId).
-- **Lithium ports (Radium / Canary), Starlight Forge**: compatible.
-- Other mods that also touch chunk saving: they may occasionally make BAS's takeover fail, in which case BAS automatically falls back to vanilla handling — data safety is unaffected, you just lose a bit of the performance gain.
+- **Cannot be installed together** (all take over the same save path): Fast Async World Save (`fastasyncworldsave`, BAS logs a WARN when it detects this one), Smooth Chunk Save, and other async / per-tick save mods.
+- **C2ME / C2ME-Forge**: split it by feature. The save side is pick-one; parallel loading is complementary under BAS's default config but becomes pick-one once BAS async loading is enabled; worldgen is always complementary.
+- **Compatible**: Starlight, Radium / Canary, Modernfix, FerriteCore and similar.
 
-The full compatibility matrix is in [ROADMAP](docs/ROADMAP.md#bas-兼容性矩阵-代码核对) (Chinese).
+The reasoning, the full list of injection points and the data-integrity contract of each compatibility level are in [COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md).
 
 ## Quick recovery if something goes wrong
 
 All three options keep world data intact:
 
-1. **Disable temporarily**: set `general.enabled` to `false` in the config, restart or `/reload`. The mod stays installed but all logic is skipped — pure vanilla.
+1. **Disable temporarily**: set `general.enabled` to `false`, restart or `/reload`. The mod stays installed but all logic is skipped — pure vanilla.
 2. **Uninstall completely**: move the jar out of `mods/` and restart. World data remains protected by vanilla saving; uninstalling loses nothing.
-3. **Tune instead of removing**: if you suspect a performance setting, adjust `chunksPerTickBase` (range 1-64) or switch `eventCompatMode` to `FULL` first — no need to uninstall.
+3. **Tune instead of removing**: if you suspect a performance setting, adjust `chunksPerTickBase` (1-64) or switch `eventCompatMode` to `FULL` first — no need to uninstall.
 
 ## Building / development
 
@@ -253,9 +112,9 @@ All three options keep world data intact:
 ./gradlew :neoforge:runServer   # start a 1.21.1 NeoForge dev server
 ```
 
-Module layout: `common/` (zero-Minecraft pure-algorithm core, source-merged into both loaders — the crown-jewel save state machine lives here once, never forked) + `forge/` (1.20.1) + `neoforge/` (1.21.1). Dual-version design and porting details are in [MULTIVERSION_PLAN.md](docs/MULTIVERSION_PLAN.md) (Chinese).
+Module layout: `common/` (zero-Minecraft pure-algorithm core, source-merged into both loaders — the crown-jewel save state machine lives here once, never forked) + `forge/` (1.20.1) + `neoforge/` (1.21.1).
 
-Technical deep dive, ecosystem research, full compatibility matrix and the version roadmap are in [ROADMAP.md](docs/ROADMAP.md) (Chinese).
+The version roadmap and capability overview are in [ROADMAP.md](docs/ROADMAP.md) (Chinese); dual-version porting details are in [archive/MULTIVERSION_PLAN.md](docs/archive/MULTIVERSION_PLAN.md) (Chinese).
 
 ## License
 
