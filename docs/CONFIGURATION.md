@@ -10,7 +10,7 @@ config/Shinoyuki-Optimize/shinoyuki_betterautosave/common.toml
 
 默认配置开箱即用，大多数服务器不需要改动。本文按配置段逐项说明，配置文件内也有等价的英文注释。
 
-**双端差异**：Forge 1.20.1 版共 35 个配置项，NeoForge 1.21.1 版 18 个。差的 17 项是 `[levelData]`、`[playerData]`、`[load]` 三整段加上 `workers.loadWorkerThreads`。两端共有的 18 项，默认值、取值范围与枚举完全相同。差异逐项说明见 [ROADMAP.md 的能力总览](ROADMAP.md#能力总览)。
+**双端差异**：Forge 1.20.1 版共 43 个配置项，NeoForge 1.21.1 版 26 个。差的 17 项是 `[levelData]`、`[playerData]`、`[load]` 三整段加上 `workers.loadWorkerThreads`。两端共有的 26 项，默认值、取值范围与枚举完全相同。差异逐项说明见 [ROADMAP.md 的能力总览](ROADMAP.md#能力总览)。
 
 ## 一、总开关与节流
 
@@ -179,6 +179,14 @@ config/Shinoyuki-Optimize/shinoyuki_betterautosave/common.toml
 |---|---|---|---|
 | `diagnostics.diagnosticLogging` | `true` | 布尔 | 周期性把队列深度、吞吐与延迟分位数记入服务器日志 |
 | `diagnostics.diagnosticLogIntervalTicks` | `6000` | 20 - 72000 | 诊断摘要输出间隔，单位游戏刻（20 刻 = 1 秒）。默认 6000 即 5 分钟 |
+| `diagnostics.syncLoadDetection` | `true` | 布尔 | 检测并报告主线程同步区块加载。开销见下文 |
+| `diagnostics.syncLoadThresholdMs` | `50` | 1 - 60000 | 单次阻塞达到该毫秒数（含等于）才记录。默认 50 即一个游戏刻的长度 |
+| `diagnostics.syncLoadTrackLimit` | `64` | 8 - 4096 | 同时追踪的（归因主体，调用栈）组合上限，超出按 LRU 逐出。**启动时冻结，改后需重启** |
+| `diagnostics.syncLoadStackDepth` | `24` | 4 - 128 | 每次记录保留的非原版栈帧数。原版、JDK、Mixin 与 BAS 自身的帧被跳过 |
+| `diagnostics.tickGapDetection` | `true` | 布尔 | 检测 tick 与 tick 之间的长停顿。这段时间不计入 MSPT，代价是每刻两次 `System.nanoTime()` |
+| `diagnostics.tickGapThresholdMs` | `1000` | 50 - 600000 | tick 间隔达到该毫秒数才记录。下限 50 是一个游戏刻的长度，低于它会把正常的等待也记进来 |
+| `diagnostics.tickGapDeepAttribution` | `false` | 布尔 | 深度档：给任务队列里每个任务单独计时，把长停顿落到具体任务上。有常态开销，默认关闭 |
+| `diagnostics.tickGapDeepTrackLimit` | `64` | 8 - 4096 | 深度档表的 LRU 上限（每种任务类型一条），深度档关闭时无效。**启动时冻结，改后需重启** |
 | `prometheus.enabled` | `false` | 布尔 | 启用 Prometheus 指标 HTTP 导出器 |
 | `prometheus.bindAddress` | `"0.0.0.0"` | 字符串 | HTTP 服务器绑定地址 |
 | `prometheus.port` | `9450` | 1024 - 65535 | HTTP 服务器端口，默认避开 9090 / 9100 / 25565 |
@@ -195,6 +203,81 @@ port = 9450
 
 **安全提示**：默认绑定 `0.0.0.0`，接受任意网卡的连接。指标本身不含玩家隐私，但会泄露服务器的活动规律。服务器有公网 IP 时请用防火墙限制该端口，或把 `bindAddress` 改成 `127.0.0.1` 只允许本机抓取。
 
+### 主线程同步区块加载与 tick 间停顿检测（0.20.0 新增）
+
+这两项检测的由来是一次 74 人在线的生产压测：主线程上 BAS 自己的存盘路径只占 0.03%，而实测到一次 5.2 秒的主线程同步区块加载，以及 17.1 秒和 14.8 秒两段 tick 间停顿。后者不计入 MSPT，TPS 曲线与常规监控面板上完全看不到。两项检测只观测、不干预，不会自动关闭或改写任何东西。
+
+**同步区块加载**指区块不在内存里时，有代码在主线程上直接把它要过来，主线程原地等硬盘读完、必要时连地形生成一起等完。检测点是原版 `ServerChunkCache.getChunk` 里那次「等待区块就绪」的调用：它位于四槽区块缓存未命中之后的分支上，缓存命中时根本执行不到；未命中时也只多两次 `System.nanoTime()`（数十纳秒），而调用栈只在阻塞确实达到 `syncLoadThresholdMs` 之后才采集——正常运行中一次都不采。这是它可以默认开启的前提。
+
+同一来源只在首次出现时打印一行日志，之后只累加进统计表：
+
+```
+[BetterAutoSave] main-thread sync chunk load: 5188ms at (120,-340) in minecraft:overworld, called from com.example.protection.RegionScanner
+```
+
+**tick 间停顿**指一个游戏刻结束到下一刻开始之间的时间。服务器在这段时间里等待下一刻并处理任务队列，这段时间不计入 MSPT，所以队列里卡住十几秒时 MSPT 可以一直显示健康。默认档在每刻开始与结束各取一次时间戳，间隔达到 `tickGapThresholdMs` 即记一次：
+
+```
+[BetterAutoSave] inter-tick gap: 17100ms after tick 148213 (this time is not counted in MSPT)
+```
+
+默认档只报「有多长、发生在哪个 tick 之后」。要落到具体任务，打开 `tickGapDeepAttribution`：它给任务队列里的每个任务单独计时，把耗时超过 `tickGapThresholdMs` 十分之一（默认即 100 毫秒）的任务按实际 `Runnable` 类型归档。深度档没有自己的阈值键，就是这个派生关系。服务器每刻要跑几百个任务，每个任务多两次纳秒取时，因此建议只在已经收到 tick gap 报告、需要缩小范围时临时打开，查完关掉。
+
+**归因的口径**：检测报告的是阻塞发生在哪条调用链上，取调用栈里第一个非原版类；能在加载器的 mod 文件扫描表里匹配到时换成 modid，匹配不到就保留全限定类名。检测到的阻塞多数来自第三方 mod 的调用模式——同步取区块在很多场景下是完全合理的写法，只是代价随服务器规模、视距和硬盘速度放大——不代表该 mod 存在缺陷。调用链经过事件总线时，这个类名可能是事件订阅者而不是最初的发起方，更深的线索在命令输出的栈帧行里。
+
+`/betterautosave diagnose [数量]`（默认 10，可填 1-50）输出样例，数值与类名均为示意：
+
+```
+diagnose (syncLoadThresholdMs=50 tickGapThresholdMs=1000 deepAttribution=false)
+sync-load: stalls=37 totalBlocked=48.21s tracked=2/64
+note: stalls listed above are attributed to the call site, not to a defect in the owning mod.
+rank  attribution                   hits    total       p99         max         last pos        dimension                 last
+1     examplemod                    12      31.40s      5.19s       5.19s       [120,-340]      minecraft:overworld       2m ago
+        at com.example.protection.RegionScanner
+        at com.example.protection.event.PlayerEvents
+        at net.minecraftforge.eventbus.ASMEventHandler
+        ... (9 more frames)
+2     com.example.map.RegionCache   19      14.60s      1.02s       1.31s       [-812,455]      minecraft:overworld       14s ago
+        at com.example.map.RegionCache
+        at com.example.map.MapUpdateTask
+tick-gap: exceeded=2 max=17.10s last=14.80s after tick 148213 p99=17.10s samples=2
+  deep attribution disabled (diagnostics.tickGapDeepAttribution=false)
+```
+
+采集路径本身出过错时，输出里会多一行 `collection failures: stackCapture=<n> modAttributionIndex=<n>`。采集失败不影响服务器运行，但也不会被静默掉——这一行为零才说明上面的表是完整的。
+
+同步加载的日志按来源去重、tick 间停顿的日志按时间窗口限流，被它们挡下的行数不为零时，紧接着上一行再多一行：
+
+```
+  warn lines suppressed by dedup/throttle: syncLoad=3 tickGap=5 (aggregate counters are unaffected)
+```
+
+这一行只统计「本该打出、却被去重或限流挡下」的日志行数。统计表与 Prometheus 的累计数字始终按实际发生次数记，不受去重与限流影响。
+
+`/betterautosave diagnose reset` 只清空上面这两张统计表，同时重置「每个来源只打印一次」的日志去重记录，之后同一个调用点会重新打出一行日志。累计计数（下表四个指标）刻意保留：Prometheus 的 counter 必须单调递增，清零会破坏 `rate()`。
+
+开启诊断日志后，周期摘要末尾会多出两行：
+
+```
+[BetterAutoSave]   |- syncLoad: stalls=37 totalBlocked=48210ms tracked=2 top=examplemod=31400ms x12, com.example.map.RegionCache=14600ms x19
+[BetterAutoSave]   `- tickGap: exceeded=2 max=17100ms last=14800ms after tick 148213 deepTasks=0
+```
+
+这两行与 `diagnose` 读的是同一组累计值，只是单位不同：`diagnose` 面向人工排查，按数量级自动选单位并保留两位小数（`totalBlocked=48.21s`）；周期摘要沿用其它摘要行统一的整毫秒形式（`totalBlocked=48210ms`），便于逐行做文本比对和日志抓取。交叉核对时 `48210ms` 就是 `48.21s`，不必换算。
+
+Prometheus 导出器新增四个指标：
+
+| 指标 | 类型 | 含义 |
+|---|---|---|
+| `bas_sync_load_stalls_total` | counter | 超阈值的主线程同步区块加载次数 |
+| `bas_sync_load_stall_seconds_total` | counter | 上述阻塞的累计秒数 |
+| `bas_tick_gap_exceeded_total` | counter | 超阈值的 tick 间停顿次数 |
+| `bas_tick_gap_max_seconds` | gauge | 本次启动以来最长的一次 tick 间停顿 |
+
+升级到 0.20.0 时注意顺序：先换 jar 重启，让新版本把这 8 个键写进 `common.toml`，再去改它们。反过来先改配置再换 jar，运行中的旧 jar 会在配置校正时把它不认识的键当作非法项删掉。
+
+一处需要知道的失效模式：同时装了重写区块获取路径的 mod（C2ME 一类）时，被检测的那次调用可能已经不存在，探针装不上去。此时同步加载检测静默不生效，而不是让服务器启动失败——纯观测功能不值得换来一次启动崩溃。判断依据是 `bas_sync_load_stalls_total` 长期为 0 而服务器确实在卡。
+
 ## 九、与备份工具的配合
 
 BAS 把区块存盘改成异步之后，`/save-all flush` 返回（以及控制台那行 `Saved the game`）**不再代表数据已经全部落盘**。靠这行日志判断「保存完成」的外部备份工具会拿到一个提前的信号。
@@ -205,7 +288,9 @@ BAS 把区块存盘改成异步之后，`/save-all flush` 返回（以及控制�
 
 ## 十、热重载行为
 
-以下配置项在代码中明确标注可热重载，改完即刻生效：`levelData.cacheRegistrySnapshot`、`playerData.loadFallback`、`playerData.atomicSidecarWrite`、`playerData.sidecarFsync`、`playerData.advancementsSkipMode`、`load.asyncPoiPrefetch`。
+以下配置项在代码中明确标注可热重载，改完即刻生效：`levelData.cacheRegistrySnapshot`、`playerData.loadFallback`、`playerData.atomicSidecarWrite`、`playerData.sidecarFsync`、`playerData.advancementsSkipMode`、`load.asyncPoiPrefetch`、`diagnostics.syncLoadDetection`、`diagnostics.syncLoadThresholdMs`、`diagnostics.syncLoadStackDepth`、`diagnostics.tickGapDetection`、`diagnostics.tickGapThresholdMs`、`diagnostics.tickGapDeepAttribution`。
+
+`diagnostics.syncLoadTrackLimit` 与 `diagnostics.tickGapDeepTrackLimit` 明确**不是**热重载生效：两张统计表在服务器启动时按当时的值构造一次，改完需要重启。
 
 `load.enabled` 明确**不是**热重载生效：mixin 在类加载期按磁盘上的值决定是否应用，从关改开必须重启。
 

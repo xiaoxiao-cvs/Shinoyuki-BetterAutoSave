@@ -100,9 +100,9 @@ The cost is that turning it from off to on requires a server restart; config hot
 
 ## 6. Injection points
 
-For mod authors and troubleshooting. Only business-logic mixins are listed; the pure Accessor / Invoker interfaces (six on each build, no business logic) are omitted.
+For mod authors and troubleshooting. Only business-logic mixins are listed; the pure Accessor / Invoker interfaces (seven on each build, no business logic) are omitted.
 
-### Forge 1.20.1 (18 business mixins)
+### Forge 1.20.1 (19 business mixins)
 
 | Target | Method | Gated by |
 |---|---|---|
@@ -113,10 +113,11 @@ For mod authors and troubleshooting. Only business-logic mixins are listed; the 
 | `ChunkSerializer` | `read` (7 `@WrapOperation`) | startup gated |
 | `LevelChunk` | `initInternal` inside the constructor | startup gated |
 | `SectionStorage` | POI reading (Invoker plus injected methods) | startup gated |
+| `ServerChunkCache` | the `managedBlock` wait call inside `getChunk` (timed only; loading behavior unchanged) | `diagnostics.syncLoad*` |
 | `DimensionDataStorage` | `save()` | `general.enabled`, `safety.savedDataMaxFileSizeMB` |
 | `SavedData` | `setDirty(boolean)` / `isDirty()` | none |
 | `EntityStorage` | `storeEntities` | `general.enabled` |
-| `MinecraftServer` | `stopServer` / `saveEverything` / `tickServer` | partly `general.enabled` and the stagger setting |
+| `MinecraftServer` | `stopServer` / `saveEverything` / `tickServer` / `doRunTask(TickTask)` | partly `general.enabled` and the stagger setting; the `tickServer` timestamps and `doRunTask` are gated by `diagnostics.tickGap*` |
 | `ForgeHooks` | `writeAdditionalLevelSaveData` | `general.enabled` + `levelData.cacheRegistrySnapshot` |
 | `LevelStorageSource$LevelStorageAccess` | `readAdditionalLevelSaveData` | `levelData.verifyOnStartup` / `startupBackup` |
 | `LevelStorageSource$LevelStorageAccess` | `saveDataTag` | `levelData.postWriteVerify` (OFF disables it) |
@@ -125,7 +126,7 @@ For mod authors and troubleshooting. Only business-logic mixins are listed; the 
 | `PlayerList` | `saveAll` / `remove` | `playerData.staggerMaxPerTick` |
 | `ServerStatsCounter` | `save` | `playerData.atomicSidecarWrite`, `sidecarFsync` |
 
-### NeoForge 1.21.1 (7 business mixins)
+### NeoForge 1.21.1 (8 business mixins)
 
 | Target | Method | Gated by |
 |---|---|---|
@@ -134,7 +135,8 @@ For mod authors and troubleshooting. Only business-logic mixins are listed; the 
 | `ChunkMap` | `save(ChunkAccess)` | `general.enabled`, `compat.eventCompatMode` |
 | `DimensionDataStorage` | `save()` | `general.enabled`, `safety.savedDataMaxFileSizeMB` |
 | `EntityStorage` | `storeEntities` | `general.enabled` |
-| `MinecraftServer` | `tickServer` | none |
+| `MinecraftServer` | `tickServer` / `doRunTask(TickTask)` | the `tickServer` timestamps and `doRunTask` are gated by `diagnostics.tickGap*` |
 | `SavedData` | `setDirty(boolean)` / `isDirty()` | none |
+| `ServerChunkCache` | the `managedBlock` wait call inside `getChunk` (timed only; loading behavior unchanged) | `diagnostics.syncLoad*` |
 
-The NeoForge build is a pure async-save implementation: no load-side mixins, no `levelData` or `playerData` injections, and every method it intercepts is on a write path.
+The NeoForge build has no load-side mixins and no `levelData` or `playerData` injections: everything that alters save behavior sits on a write path. The one interception on a read path is `ServerChunkCache.getChunk`, added in 0.20.0, which only takes a timestamp before and after vanilla's wait call — it changes no loading behavior and moves no work.

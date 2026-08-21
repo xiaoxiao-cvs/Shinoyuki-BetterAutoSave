@@ -10,7 +10,7 @@ config/Shinoyuki-Optimize/shinoyuki_betterautosave/common.toml
 
 The defaults work out of the box and most servers need no changes. This document walks through every setting by section; the config file itself carries equivalent comments.
 
-**Differences between the two builds**: the Forge 1.20.1 build has 35 settings, the NeoForge 1.21.1 build 18. The 17 missing ones are the entire `[levelData]`, `[playerData]` and `[load]` sections plus `workers.loadWorkerThreads`. For the 18 shared settings, defaults, ranges and enum values are identical. A per-feature breakdown is in the [capability overview in ROADMAP.md](ROADMAP.md#能力总览) (Chinese).
+**Differences between the two builds**: the Forge 1.20.1 build has 43 settings, the NeoForge 1.21.1 build 26. The 17 missing ones are the entire `[levelData]`, `[playerData]` and `[load]` sections plus `workers.loadWorkerThreads`. For the 26 shared settings, defaults, ranges and enum values are identical. A per-feature breakdown is in the [capability overview in ROADMAP.md](ROADMAP.md#能力总览) (Chinese).
 
 ## 1. Master switch and throttling
 
@@ -179,6 +179,14 @@ If something goes wrong, set `load.enabled` back to `false`, or switch `loadEven
 |---|---|---|---|
 | `diagnostics.diagnosticLogging` | `true` | boolean | Periodically log queue depths, throughput and latency percentiles |
 | `diagnostics.diagnosticLogIntervalTicks` | `6000` | 20 - 72000 | Interval between diagnostic summaries in game ticks (20 ticks = 1s). The default 6000 is 5 minutes |
+| `diagnostics.syncLoadDetection` | `true` | boolean | Detect and report main-thread synchronous chunk loads. Cost is discussed below |
+| `diagnostics.syncLoadThresholdMs` | `50` | 1 - 60000 | A single load blocking at least this long (milliseconds) is recorded. The default 50 is one game tick |
+| `diagnostics.syncLoadTrackLimit` | `64` | 8 - 4096 | Max tracked (attribution, stack) pairs; LRU eviction beyond that. **Frozen at startup; changing it needs a restart** |
+| `diagnostics.syncLoadStackDepth` | `24` | 4 - 128 | Non-vanilla stack frames retained per record. Vanilla, JDK, Mixin and BAS's own frames are skipped |
+| `diagnostics.tickGapDetection` | `true` | boolean | Detect long pauses between ticks. That time is not part of MSPT; the cost is two `System.nanoTime()` calls per tick |
+| `diagnostics.tickGapThresholdMs` | `1000` | 50 - 600000 | An inter-tick gap of at least this long (milliseconds) is recorded. The lower bound of 50 is one tick; below it, normal waiting would be recorded too |
+| `diagnostics.tickGapDeepAttribution` | `false` | boolean | Deep mode: time every task in the server task queue so a gap can be attributed to one task. Has a steady-state cost, off by default |
+| `diagnostics.tickGapDeepTrackLimit` | `64` | 8 - 4096 | LRU limit for the deep-mode table (one row per task type); ignored while deep mode is off. **Frozen at startup; changing it needs a restart** |
 | `prometheus.enabled` | `false` | boolean | Enable the Prometheus metrics HTTP exporter |
 | `prometheus.bindAddress` | `"0.0.0.0"` | string | Bind address for the HTTP server |
 | `prometheus.port` | `9450` | 1024 - 65535 | HTTP server port; the default avoids 9090 / 9100 / 25565 |
@@ -195,6 +203,81 @@ port = 9450
 
 **Security note**: the default bind is `0.0.0.0`, accepting connections on any interface. The metrics contain no player privacy but do expose the server's activity patterns. If the server has a public IP, firewall the port or set `bindAddress` to `127.0.0.1` to allow local scraping only.
 
+### Main-thread sync chunk loads and inter-tick gaps (new in 0.20.0)
+
+Both detections come out of a production stress test with 74 players online: BAS's own save path accounted for 0.03% of main-thread time, while the profile contained one 5.2-second main-thread synchronous chunk load and two inter-tick pauses of 17.1 and 14.8 seconds. The latter are not counted in MSPT and are invisible on the TPS graph and on ordinary monitoring dashboards. Both detections observe only; neither disables nor rewrites anything.
+
+**A synchronous chunk load** is what happens when a chunk is not in memory and something on the main thread asks for it directly: the main thread waits in place until the disk read — and if needed, terrain generation — has finished. The instrumented call is the "wait until the chunk is ready" call inside vanilla's `ServerChunkCache.getChunk`. It sits on the branch taken after the four-slot chunk cache misses, so it is not reached at all on a cache hit; on a miss it only adds two `System.nanoTime()` calls (tens of nanoseconds), and a stack is captured only once the block actually reaches `syncLoadThresholdMs` — never during normal operation. That is what makes it safe to have on by default.
+
+Each distinct source logs one line the first time it appears; afterwards it only accumulates into the table:
+
+```
+[BetterAutoSave] main-thread sync chunk load: 5188ms at (120,-340) in minecraft:overworld, called from com.example.protection.RegionScanner
+```
+
+**An inter-tick gap** is the time between the end of one tick and the start of the next. The server spends it waiting for the next tick and draining its task queue, and none of it counts towards MSPT — which is why MSPT can look healthy while the queue has been stuck for ten seconds. The default mode takes one timestamp at the start and one at the end of each tick and records any gap reaching `tickGapThresholdMs`:
+
+```
+[BetterAutoSave] inter-tick gap: 17100ms after tick 148213 (this time is not counted in MSPT)
+```
+
+The default mode reports how long the gap was and which tick it followed. To get down to individual tasks, turn on `tickGapDeepAttribution`: it times every task in the server task queue and files those taking more than a tenth of `tickGapThresholdMs` (100 ms by default) under their actual `Runnable` type. Deep mode has no threshold key of its own — that derivation is the whole rule. The server runs hundreds of tasks per tick and each gains two nanosecond reads, so turn it on only while narrowing down a gap that has already been reported, then turn it back off.
+
+**How attribution is meant to be read**: the detection reports which call chain the block happened on, using the first non-vanilla class on the stack — replaced with a mod id when it matches the loader's mod file scan data, and left as the fully qualified class name when it does not. Stalls reported here usually reflect another mod's call pattern — fetching a chunk synchronously is perfectly reasonable in many situations, its cost simply scales with server size, view distance and disk speed — and are not by themselves evidence of a defect in that mod. When the call chain crosses an event bus, that class may be the subscriber rather than the original caller; the deeper frames are printed under each row.
+
+Sample output of `/betterautosave diagnose [count]` (default 10, accepts 1-50). Values and class names are illustrative:
+
+```
+diagnose (syncLoadThresholdMs=50 tickGapThresholdMs=1000 deepAttribution=false)
+sync-load: stalls=37 totalBlocked=48.21s tracked=2/64
+note: stalls listed above are attributed to the call site, not to a defect in the owning mod.
+rank  attribution                   hits    total       p99         max         last pos        dimension                 last
+1     examplemod                    12      31.40s      5.19s       5.19s       [120,-340]      minecraft:overworld       2m ago
+        at com.example.protection.RegionScanner
+        at com.example.protection.event.PlayerEvents
+        at net.minecraftforge.eventbus.ASMEventHandler
+        ... (9 more frames)
+2     com.example.map.RegionCache   19      14.60s      1.02s       1.31s       [-812,455]      minecraft:overworld       14s ago
+        at com.example.map.RegionCache
+        at com.example.map.MapUpdateTask
+tick-gap: exceeded=2 max=17.10s last=14.80s after tick 148213 p99=17.10s samples=2
+  deep attribution disabled (diagnostics.tickGapDeepAttribution=false)
+```
+
+If the collection path itself has failed at any point, one extra line appears: `collection failures: stackCapture=<n> modAttributionIndex=<n>`. A collection failure never affects the running server, but it is not swallowed either — only a zero there means the table above is complete.
+
+Sync-load logging is de-duplicated per source and inter-tick gap logging is throttled by a time window. When either has held a line back, one more line follows the one above:
+
+```
+  warn lines suppressed by dedup/throttle: syncLoad=3 tickGap=5 (aggregate counters are unaffected)
+```
+
+That line counts only the log lines that would have been printed but were held back by de-duplication or throttling. The tables and the Prometheus counters always record every occurrence and are unaffected by either.
+
+`/betterautosave diagnose reset` clears only those two tables and re-arms the once-per-source log de-duplication, so the same call site logs one line again afterwards. The cumulative counters below are deliberately kept: Prometheus counters must stay monotonic, and zeroing them breaks `rate()`.
+
+With diagnostic logging enabled, the periodic summary gains two lines:
+
+```
+[BetterAutoSave]   |- syncLoad: stalls=37 totalBlocked=48210ms tracked=2 top=examplemod=31400ms x12, com.example.map.RegionCache=14600ms x19
+[BetterAutoSave]   `- tickGap: exceeded=2 max=17100ms last=14800ms after tick 148213 deepTasks=0
+```
+
+These two lines read the same cumulative values as `diagnose`, only in a different unit: `diagnose` is meant for hands-on investigation and picks a unit by magnitude with two decimals (`totalBlocked=48.21s`), while the periodic summary keeps the whole-millisecond form shared by every other summary line (`totalBlocked=48210ms`), which keeps those lines easy to diff and to scrape. When cross-checking, `48210ms` is the same number as `48.21s` — no arithmetic needed.
+
+The Prometheus exporter gains four metrics:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `bas_sync_load_stalls_total` | counter | Main-thread synchronous chunk loads over the threshold |
+| `bas_sync_load_stall_seconds_total` | counter | Cumulative seconds blocked in those loads |
+| `bas_tick_gap_exceeded_total` | counter | Inter-tick gaps over the threshold |
+| `bas_tick_gap_max_seconds` | gauge | Longest inter-tick gap since server start |
+
+Mind the order when upgrading to 0.20.0: replace the jar and restart first so the new build writes these 8 keys into `common.toml`, then edit them. Editing the config before swapping the jar lets the running old build drop keys it does not recognize during config correction.
+
+One failure mode worth knowing: with a mod that rewrites the chunk-fetch path installed alongside (something in the C2ME family), the instrumented call may no longer exist and the probe cannot attach. Sync load detection then silently does nothing rather than failing the server's startup — a purely observational feature is not worth a boot crash. The symptom is `bas_sync_load_stalls_total` staying at 0 while the server visibly stalls.
+
 ## 9. Working with backup tools
 
 Now that BAS writes chunks asynchronously, the return of `/save-all flush` (and the `Saved the game` console line) **no longer means the data is fully on disk**. An external backup tool that keys off that line gets a premature signal.
@@ -205,7 +288,9 @@ In-process mods should use BAS's `SaveCoordination` API for an accurate state. F
 
 ## 10. Hot-reload behavior
 
-These settings are explicitly documented in code as hot-reloadable and take effect immediately: `levelData.cacheRegistrySnapshot`, `playerData.loadFallback`, `playerData.atomicSidecarWrite`, `playerData.sidecarFsync`, `playerData.advancementsSkipMode`, `load.asyncPoiPrefetch`.
+These settings are explicitly documented in code as hot-reloadable and take effect immediately: `levelData.cacheRegistrySnapshot`, `playerData.loadFallback`, `playerData.atomicSidecarWrite`, `playerData.sidecarFsync`, `playerData.advancementsSkipMode`, `load.asyncPoiPrefetch`, `diagnostics.syncLoadDetection`, `diagnostics.syncLoadThresholdMs`, `diagnostics.syncLoadStackDepth`, `diagnostics.tickGapDetection`, `diagnostics.tickGapThresholdMs`, `diagnostics.tickGapDeepAttribution`.
+
+`diagnostics.syncLoadTrackLimit` and `diagnostics.tickGapDeepTrackLimit` are explicitly **not** hot-reloadable: both tables are constructed once when the server starts, so changing them requires a restart.
 
 `load.enabled` is explicitly **not** hot-reloadable: mixins decide whether to apply at class-load time based on the on-disk value, so turning it on requires a restart.
 

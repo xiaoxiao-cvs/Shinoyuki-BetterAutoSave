@@ -100,9 +100,9 @@ C2ME-Forge 已于 2025-07-12 archived，实际同装的情况很少。
 
 ## 六、拦截点明细
 
-给 mod 作者与排查用。以下只列业务逻辑拦截，纯 Accessor / Invoker（各 6 个，无业务逻辑）不列。
+给 mod 作者与排查用。以下只列业务逻辑拦截，纯 Accessor / Invoker（各 7 个，无业务逻辑）不列。
 
-### Forge 1.20.1（18 个业务 mixin）
+### Forge 1.20.1（19 个业务 mixin）
 
 | 目标 | 方法 | 受哪个配置门控 |
 |---|---|---|
@@ -113,10 +113,11 @@ C2ME-Forge 已于 2025-07-12 archived，实际同装的情况很少。
 | `ChunkSerializer` | `read`（7 处 `@WrapOperation`） | 启动期门控 |
 | `LevelChunk` | 构造器内的 `initInternal` | 启动期门控 |
 | `SectionStorage` | POI 读取相关（Invoker + 注入方法） | 启动期门控 |
+| `ServerChunkCache` | `getChunk` 内的 `managedBlock` 等待调用（只计时，不改变加载行为） | `diagnostics.syncLoad*` |
 | `DimensionDataStorage` | `save()` | `general.enabled`、`safety.savedDataMaxFileSizeMB` |
 | `SavedData` | `setDirty(boolean)` / `isDirty()` | 无 |
 | `EntityStorage` | `storeEntities` | `general.enabled` |
-| `MinecraftServer` | `stopServer` / `saveEverything` / `tickServer` | 部分受 `general.enabled` 与错峰开关门控 |
+| `MinecraftServer` | `stopServer` / `saveEverything` / `tickServer` / `doRunTask(TickTask)` | 部分受 `general.enabled` 与错峰开关门控；`tickServer` 的时间戳与 `doRunTask` 受 `diagnostics.tickGap*` 门控 |
 | `ForgeHooks` | `writeAdditionalLevelSaveData` | `general.enabled` + `levelData.cacheRegistrySnapshot` |
 | `LevelStorageSource$LevelStorageAccess` | `readAdditionalLevelSaveData` | `levelData.verifyOnStartup` / `startupBackup` |
 | `LevelStorageSource$LevelStorageAccess` | `saveDataTag` | `levelData.postWriteVerify`（OFF 即禁用） |
@@ -125,7 +126,7 @@ C2ME-Forge 已于 2025-07-12 archived，实际同装的情况很少。
 | `PlayerList` | `saveAll` / `remove` | `playerData.staggerMaxPerTick` |
 | `ServerStatsCounter` | `save` | `playerData.atomicSidecarWrite`、`sidecarFsync` |
 
-### NeoForge 1.21.1（7 个业务 mixin）
+### NeoForge 1.21.1（8 个业务 mixin）
 
 | 目标 | 方法 | 受哪个配置门控 |
 |---|---|---|
@@ -134,7 +135,8 @@ C2ME-Forge 已于 2025-07-12 archived，实际同装的情况很少。
 | `ChunkMap` | `save(ChunkAccess)` | `general.enabled`、`compat.eventCompatMode` |
 | `DimensionDataStorage` | `save()` | `general.enabled`、`safety.savedDataMaxFileSizeMB` |
 | `EntityStorage` | `storeEntities` | `general.enabled` |
-| `MinecraftServer` | `tickServer` | 无 |
+| `MinecraftServer` | `tickServer` / `doRunTask(TickTask)` | `tickServer` 的时间戳与 `doRunTask` 受 `diagnostics.tickGap*` 门控 |
 | `SavedData` | `setDirty(boolean)` / `isDirty()` | 无 |
+| `ServerChunkCache` | `getChunk` 内的 `managedBlock` 等待调用（只计时，不改变加载行为） | `diagnostics.syncLoad*` |
 
-NeoForge 版是纯异步存盘实现，没有任何加载侧 mixin，也没有 `levelData` / `playerData` 相关拦截 —— 拦截的方法全部是写路径。
+NeoForge 版没有任何加载侧 mixin，也没有 `levelData` / `playerData` 相关拦截：所有改写存盘行为的拦截都在写路径上。唯一落在读路径上的是 0.20.0 起的 `ServerChunkCache.getChunk`，它只在原版那次等待调用的前后各取一次时间戳，不改变加载行为、不搬动任何工作。

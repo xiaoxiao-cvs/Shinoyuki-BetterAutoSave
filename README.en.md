@@ -55,7 +55,7 @@ Beyond that, the Forge build also fixes three vanilla paths that silently lose d
 | `workers.savedDataWorkerThreads` | 1 | Background threads for saved data; raise to 2 with mods that write a lot of vanilla SavedData |
 | `compat.eventCompatMode` | PARTIAL | Event compatibility level; leave it alone unless you know you need it |
 
-The Forge build has 35 settings, the NeoForge build 18. **Every setting, why each default is what it is, and the recommended rollout path are documented in [CONFIGURATION.en.md](docs/CONFIGURATION.en.md)**, covering player data protection, `level.dat` integrity, async chunk loading, Prometheus monitoring and working with backup tools.
+The Forge build has 43 settings, the NeoForge build 26. **Every setting, why each default is what it is, and the recommended rollout path are documented in [CONFIGURATION.en.md](docs/CONFIGURATION.en.md)**, covering player data protection, `level.dat` integrity, async chunk loading, Prometheus monitoring and working with backup tools.
 
 ## Feature matrix across the two builds
 
@@ -71,6 +71,7 @@ The two builds are not identical. Some gaps exist because NeoForge fixed the pro
 | playerdata read fallback | yes | not needed (fixed upstream in 1.21) |
 | advancements / stats atomic write | yes | no (1.21 still truncates on write; port pending) |
 | advancements dirty skip, staggered player saving | yes | no (performance only; port pending) |
+| Sync chunk load / inter-tick gap diagnostics | yes | yes |
 
 ## In-game commands
 
@@ -85,8 +86,36 @@ Requires OP (permission level 2).
 | `/betterautosave drain-unload` | Wait for all pending chunks to land; likewise polls in the background and returns immediately |
 | `/betterautosave hottest-chunks [count]` | List the slowest-saving chunks (default 10, accepts 1-50) to locate hotspots |
 | `/betterautosave force-async` | Force one background save pass over all chunks in the current dimension (diagnostic) |
+| `/betterautosave diagnose [count]` | List the sources of main-thread synchronous chunk loads and the inter-tick gap statistics (default 10, accepts 1-50) |
+| `/betterautosave diagnose reset` | Clear both tables above (cumulative counters are kept; see below) |
 
 High-cost chunks usually sit where block entities are dense — large automated farms, mod shop panels, complex redstone.
+
+## The stalls ordinary monitoring cannot see
+
+Two kinds of stall never show up on a normal dashboard. Since 0.20.0 BAS records both itself — observing only, never intervening, on by default.
+
+**Main-thread synchronous chunk loads.** When a chunk is not in memory and something on the main thread asks for it directly, the main thread waits in place until the disk read — and if needed, terrain generation — has finished, and the whole server is frozen meanwhile. A production stress test with 74 players measured a single wait of 5.2 seconds. BAS records every wait over 50 ms (threshold configurable): how long it blocked, the chunk coordinates, the dimension, and the first non-vanilla class on the call stack.
+
+**Long pauses between ticks.** MSPT only measures time spent inside a game tick; the wait between two ticks is not counted. The same stress test contained pauses of 17.1 and 14.8 seconds that were invisible on the TPS graph and on the dashboard — everything looked healthy while players were timing out. BAS takes one timestamp at the start and one at the end of every tick and records any gap over 1 second (configurable); an optional deep mode, off by default, attributes a gap to the individual task that caused it.
+
+**Cost**: the sync-load probe sits on the branch taken after vanilla's four-slot chunk cache misses, so it is not reached at all on a cache hit; on a miss it only adds two nanosecond reads, and a stack is captured solely once the wait exceeds the threshold — never during normal operation. The tick gap check is two nanosecond reads per tick.
+
+**On attribution**: the detection reports which call chain the block happened on, not who has a bug. Stalls reported by this feature usually reflect another mod's call pattern — fetching a chunk synchronously is perfectly reasonable in many situations, its cost simply scales with server size, view distance and disk speed — and are not by themselves evidence of a defect in that mod. Treat it as the starting point of an investigation, not its conclusion.
+
+Read it with `/betterautosave diagnose`, or scrape the four new Prometheus metrics (`bas_sync_load_stalls_total`, `bas_tick_gap_max_seconds` and two more). The eight settings and a full sample of the command output are in [section 8 of CONFIGURATION.en.md](docs/CONFIGURATION.en.md#8-diagnostics-and-monitoring).
+
+## Design boundary
+
+BAS has been evaluated to the end of what it can do here: under the extreme compatibility constraints it holds itself to, there is no meaningful async chunk optimization left to take. Where room does remain, taking it would break that compatibility — producing data-safety problems and conflicts between mods.
+
+In a production stress test with 74 players online, sampled over 550 seconds, `NbtIo` writes accounted for 0.03% of main-thread time, `ChunkSerializer` serialization for 0.67%, and everything BAS itself does for 1.42% in total. That is not the same as "there is no optimization left" — the same sample still shows roughly 0.3 percentage points on the table (`copySections` unconditionally makes two `PalettedContainer.copy` calls even for empty sections, about 0.1 pp; batching the POI replay, about 0.1 to 0.2 pp). But that is already down in the noise, and what can be taken without changing the compatibility premise adds up to less than half a percentage point.
+
+It is also not the same as "BAS makes chunk loading stop being the bottleneck". The opposite is true: the bottleneck sits in the half of the chunk system BAS cannot reach. In that same sample, `DistanceManager` distance-field propagation consumed 82% of the chunk system's main-thread budget, and the tasks actually driving loads forward only 18%.
+
+What each further step would break is concrete. Moving `ForgeCaps` onto a worker thread belongs to the same family as the data loss in issue #8: mods that attach a chunk capability lose data silently. Moving `ChunkDataEvent.Load` onto a worker thread calls every listener off the main thread; it throws nothing and simply rots over time. Moving POI / `SectionStorage` onto a worker thread runs into `SectionStorage` not being thread-safe, and the outcome is silently corrupted villager AI data. Taking over `DistanceManager` means a state machine that is not thread-safe, and a head-on conflict with C2ME. Requiring installation on both sides, or forcing everything async, gives up single-side installation, opt-in and instant rollback — the largest differentiator BAS has.
+
+Performance has reached the limit compatibility allows, so this release changes direction: instead of chasing those last fractions of a percent, BAS now tells server owners where the stalls actually come from. The full reasoning is in [ROADMAP.md](docs/ROADMAP.md#明确不做及其理由) (Chinese).
 
 ## Mod conflicts
 
