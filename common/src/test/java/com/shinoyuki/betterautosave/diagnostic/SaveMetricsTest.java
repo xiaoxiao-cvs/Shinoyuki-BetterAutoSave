@@ -155,4 +155,83 @@ class SaveMetricsTest {
 
         assertEquals(2, m.snapshot().mustDrainPending());
     }
+
+    @Test
+    void diagnostic_counters_start_at_zero() {
+        SaveMetrics.Snapshot snap = new SaveMetrics().snapshot();
+        assertEquals(0, snap.syncLoadStalls());
+        assertEquals(0, snap.syncLoadStallNs());
+        assertEquals(0, snap.tickGapExceeded());
+        assertEquals(0, snap.tickGapMaxNs());
+    }
+
+    @Test
+    void sync_load_stall_counts_and_sums_nanos_including_boundary_values() {
+        SaveMetrics m = new SaveMetrics();
+        // 边界: 0ns (阈值配置为下限 1ms 时理论最小事件) 与接近 Long 上限的巨值都必须如实累加.
+        m.recordSyncLoadStall(0L);
+        m.recordSyncLoadStall(5_188_000_000L);
+        m.recordSyncLoadStall(9_000_000_000_000_000_000L);
+
+        SaveMetrics.Snapshot snap = m.snapshot();
+        assertEquals(3, snap.syncLoadStalls(),
+                "三次记录必须计三次 (0ns 事件不得被吞)");
+        assertEquals(9_000_000_005_188_000_000L, snap.syncLoadStallNs(),
+                "累计阻塞纳秒必须是三次调用的精确和");
+    }
+
+    @Test
+    void tick_gap_max_keeps_largest_not_last_and_not_sum() {
+        SaveMetrics m = new SaveMetrics();
+        m.recordTickGap(1_000_000_000L);
+        m.recordTickGap(17_100_000_000L);
+        m.recordTickGap(500_000_000L);
+
+        SaveMetrics.Snapshot snap = m.snapshot();
+        assertEquals(3, snap.tickGapExceeded());
+        assertEquals(17_100_000_000L, snap.tickGapMaxNs(),
+                "tickGapMaxNs 必须是历史最大值, 不是最后一次 (500ms) 也不是三者之和");
+    }
+
+    @Test
+    void tick_gap_max_is_unchanged_by_an_equal_repeat() {
+        SaveMetrics m = new SaveMetrics();
+        m.recordTickGap(14_800_000_000L);
+        m.recordTickGap(14_800_000_000L);
+
+        SaveMetrics.Snapshot snap = m.snapshot();
+        // 相等值走 CAS 循环里 nanos <= prev 的早返分支: 计数仍加, max 不动.
+        assertEquals(2, snap.tickGapExceeded());
+        assertEquals(14_800_000_000L, snap.tickGapMaxNs());
+    }
+
+    @Test
+    void sync_load_and_tick_gap_counters_do_not_cross_wire() {
+        SaveMetrics syncOnly = new SaveMetrics();
+        syncOnly.recordSyncLoadStall(5_188_000_000L);
+        SaveMetrics.Snapshot syncSnap = syncOnly.snapshot();
+        assertEquals(1, syncSnap.syncLoadStalls());
+        assertEquals(0, syncSnap.tickGapExceeded(),
+                "同步加载记录不得污染 tick gap 计数");
+        assertEquals(0, syncSnap.tickGapMaxNs(),
+                "同步加载记录不得污染 tick gap 最大值");
+
+        SaveMetrics gapOnly = new SaveMetrics();
+        gapOnly.recordTickGap(17_100_000_000L);
+        SaveMetrics.Snapshot gapSnap = gapOnly.snapshot();
+        assertEquals(1, gapSnap.tickGapExceeded());
+        assertEquals(0, gapSnap.syncLoadStalls(),
+                "tick gap 记录不得污染同步加载计数");
+        assertEquals(0, gapSnap.syncLoadStallNs(),
+                "tick gap 记录不得污染同步加载耗时累加");
+    }
+
+    @Test
+    void format_ms_renders_whole_milliseconds() {
+        assertEquals("5188ms", SaveMetrics.formatMs(5_188_000_000L));
+        assertEquals("0ms", SaveMetrics.formatMs(0L));
+        assertEquals("0ms", SaveMetrics.formatMs(999_999L),
+                "不足 1ms 向下取整为 0ms, 不得四舍五入");
+        assertEquals("17100ms", SaveMetrics.formatMs(17_100_000_000L));
+    }
 }

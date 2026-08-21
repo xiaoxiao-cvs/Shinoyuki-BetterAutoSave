@@ -13,7 +13,15 @@ import com.shinoyuki.betterautosave.core.state.ChunkSaveState;
 import com.shinoyuki.betterautosave.core.state.ChunkSaveStateAccess;
 import com.shinoyuki.betterautosave.diagnostic.ChunkLatencyRecord;
 import com.shinoyuki.betterautosave.diagnostic.ChunkLatencyTracker;
+import com.shinoyuki.betterautosave.diagnostic.ModAttribution;
 import com.shinoyuki.betterautosave.diagnostic.SaveMetrics;
+import com.shinoyuki.betterautosave.diagnostic.SyncLoadDetector;
+import com.shinoyuki.betterautosave.diagnostic.SyncLoadRecord;
+import com.shinoyuki.betterautosave.diagnostic.SyncLoadStackCapture;
+import com.shinoyuki.betterautosave.diagnostic.SyncLoadTracker;
+import com.shinoyuki.betterautosave.diagnostic.TickGapDetector;
+import com.shinoyuki.betterautosave.diagnostic.TickGapRecord;
+import com.shinoyuki.betterautosave.diagnostic.TickGapTracker;
 import com.shinoyuki.betterautosave.mixin.accessor.ChunkMapAccessor;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -46,6 +54,13 @@ public final class BetterAutoSaveCommand {
                                 .executes(ctx -> hottestChunks(ctx, 10))
                                 .then(Commands.argument("count", IntegerArgumentType.integer(1, 50))
                                         .executes(ctx -> hottestChunks(ctx,
+                                                IntegerArgumentType.getInteger(ctx, "count")))))
+                        .then(Commands.literal("diagnose")
+                                .executes(ctx -> diagnose(ctx, 10))
+                                .then(Commands.literal("reset")
+                                        .executes(BetterAutoSaveCommand::diagnoseReset))
+                                .then(Commands.argument("count", IntegerArgumentType.integer(1, 50))
+                                        .executes(ctx -> diagnose(ctx,
                                                 IntegerArgumentType.getInteger(ctx, "count")))))
         );
     }
@@ -439,6 +454,169 @@ public final class BetterAutoSaveCommand {
 
         ctx.getSource().sendSuccess(() -> Component.literal(out.toString()), false);
         return top.size();
+    }
+
+    /**
+     * v0.20: /betterautosave diagnose [count]
+     *
+     * <p>把 0.20.0 新增的两类观测一次读干净: 主线程同步区块加载的 Top N 归因 (含最近一次的完整栈),
+     * 以及 tick 之间那段不计入 MSPT 的停顿。纯读快照, 不触发任何 flush / drain。
+     *
+     * <p>措辞纪律: 全部为中立事实陈述。这两类阻塞绝大多数来自第三方 mod 的调用模式, 归因指向的是
+     * 调用点而不是"某个 mod 有缺陷", 输出里固定带一行免责说明。
+     */
+    private static int diagnose(CommandContext<CommandSourceStack> ctx, int n) {
+        if (!BetterAutoSaveCore.isInstalled()) {
+            ctx.getSource().sendFailure(Component.literal("BetterAutoSave is not installed"));
+            return 0;
+        }
+        SyncLoadTracker sl = BetterAutoSaveCore.syncLoadTracker();
+        if (sl == null) {
+            ctx.getSource().sendFailure(Component.literal("SyncLoadTracker not initialized"));
+            return 0;
+        }
+        TickGapTracker tg = BetterAutoSaveCore.tickGapTracker();
+        if (tg == null) {
+            ctx.getSource().sendFailure(Component.literal("TickGapTracker not initialized"));
+            return 0;
+        }
+
+        SaveMetrics.Snapshot snap = BetterAutoSaveCore.metrics().snapshot();
+        List<SyncLoadRecord> top = sl.topByTotalBlockedNs(n);
+        long now = System.currentTimeMillis();
+
+        StringBuilder out = new StringBuilder();
+        out.append(String.format(Locale.ROOT,
+                "diagnose (syncLoadThresholdMs=%d tickGapThresholdMs=%d deepAttribution=%s)\n",
+                BetterAutoSaveConfig.syncLoadThresholdMs(),
+                BetterAutoSaveConfig.tickGapThresholdMs(),
+                BetterAutoSaveConfig.tickGapDeepAttribution()));
+        out.append(String.format(Locale.ROOT, "sync-load: stalls=%d totalBlocked=%s tracked=%d/%d",
+                snap.syncLoadStalls(), formatNs(snap.syncLoadStallNs()), sl.size(), sl.trackLimit()))
+                .append('\n');
+        out.append("note: stalls listed above are attributed to the call site, "
+                + "not to a defect in the owning mod.\n");
+        long captureFailures = SyncLoadStackCapture.failures();
+        long attributionFailures = ModAttribution.lookupFailures();
+        if (captureFailures > 0L || attributionFailures > 0L) {
+            // 诊断采集是唯一允许吞异常的路径, 因此失败必须在这里显式露出, 否则运维会把"没数据"
+            // 误读成"没问题"。
+            out.append(String.format(Locale.ROOT,
+                    "  collection failures: stackCapture=%d modAttributionIndex=%d\n",
+                    captureFailures, attributionFailures));
+        }
+        long syncLoadSuppressed = SyncLoadDetector.suppressedWarns();
+        long tickGapSuppressed = TickGapDetector.suppressedWarns();
+        if (syncLoadSuppressed > 0L || tickGapSuppressed > 0L) {
+            // 同一个道理: 少打的日志行数必须查得到, 否则运维会把"日志里没有"当成"没发生"。
+            // 被丢掉的只是人类可读的证据行, 下面两张聚合表不受影响。
+            out.append(String.format(Locale.ROOT,
+                    "  warn lines suppressed by dedup/throttle: syncLoad=%d tickGap=%d (aggregate counters are unaffected)\n",
+                    syncLoadSuppressed, tickGapSuppressed));
+        }
+
+        if (top.isEmpty()) {
+            out.append("  (no main-thread sync chunk load over threshold recorded yet)\n");
+        } else {
+            out.append(String.format(Locale.ROOT,
+                    "%-4s  %-28s  %-6s  %-10s  %-10s  %-10s  %-14s  %-24s  %s\n",
+                    "rank", "attribution", "hits", "total", "p99", "max", "last pos", "dimension", "last"));
+            for (int i = 0; i < top.size(); i++) {
+                SyncLoadRecord r = top.get(i);
+                out.append(String.format(Locale.ROOT,
+                        "%-4d  %-28s  %-6d  %-10s  %-10s  %-10s  %-14s  %-24s  %s ago\n",
+                        i + 1,
+                        truncate(r.attribution(), 28),
+                        r.totalSamples(),
+                        formatNs(r.totalBlockedNs()),
+                        formatNs(r.p99Ns()),
+                        formatNs(r.maxNs()),
+                        "[" + r.lastChunkX() + "," + r.lastChunkZ() + "]",
+                        truncate(r.lastDimensionId(), 24),
+                        formatMillisAgo(now - r.lastAtMillis())));
+                String[] frames = r.lastStackFrames();
+                int shown = Math.min(frames.length, STACK_LINES_PER_ENTRY);
+                for (int f = 0; f < shown; f++) {
+                    out.append("        at ").append(frames[f]).append('\n');
+                }
+                if (frames.length > shown) {
+                    out.append(String.format(Locale.ROOT, "        ... (%d more frames)\n",
+                            frames.length - shown));
+                }
+            }
+        }
+
+        TickGapRecord gap = tg.gapRecord();
+        out.append(String.format(Locale.ROOT,
+                "tick-gap: exceeded=%d max=%s last=%s after tick %d p99=%s samples=%d\n",
+                snap.tickGapExceeded(),
+                formatNs(snap.tickGapMaxNs()),
+                formatNs(gap.lastNs()),
+                gap.lastTickCount(),
+                formatNs(gap.p99Ns()),
+                gap.sampleCount()));
+
+        List<TickGapRecord> tasks = tg.topTasksByTotalNs(n);
+        if (!BetterAutoSaveConfig.tickGapDeepAttribution()) {
+            out.append("  deep attribution disabled (diagnostics.tickGapDeepAttribution=false)\n");
+        } else if (tasks.isEmpty()) {
+            out.append("  (no server task over the deep-attribution threshold recorded yet)\n");
+        } else {
+            out.append(String.format(Locale.ROOT, "%-4s  %-48s  %-6s  %-10s  %-10s  %s\n",
+                    "rank", "task", "hits", "total", "p99", "max"));
+            for (int i = 0; i < tasks.size(); i++) {
+                TickGapRecord r = tasks.get(i);
+                out.append(String.format(Locale.ROOT, "%-4d  %-48s  %-6d  %-10s  %-10s  %s\n",
+                        i + 1,
+                        truncate(r.label(), 48),
+                        r.totalSamples(),
+                        formatNs(r.totalNs()),
+                        formatNs(r.p99Ns()),
+                        formatNs(r.maxNs())));
+            }
+        }
+
+        ctx.getSource().sendSuccess(() -> Component.literal(out.toString()), false);
+        return top.size() + tasks.size();
+    }
+
+    /** 每条同步加载条目最多展开的栈帧行数。再多会把聊天框刷满, 完整栈仍留在 tracker 里。 */
+    private static final int STACK_LINES_PER_ENTRY = 3;
+
+    /**
+     * v0.20: /betterautosave diagnose reset
+     *
+     * <p>只清 tracker, 刻意不碰 SaveMetrics 的四个累计计数: 它们是 Prometheus counter 语义, 必须单调递增,
+     * 重置会直接破坏 rate() 的计算结果。SaveMetrics 全篇本来也没有 reset 能力。
+     */
+    private static int diagnoseReset(CommandContext<CommandSourceStack> ctx) {
+        if (!BetterAutoSaveCore.isInstalled()) {
+            ctx.getSource().sendFailure(Component.literal("BetterAutoSave is not installed"));
+            return 0;
+        }
+        SyncLoadTracker sl = BetterAutoSaveCore.syncLoadTracker();
+        if (sl == null) {
+            ctx.getSource().sendFailure(Component.literal("SyncLoadTracker not initialized"));
+            return 0;
+        }
+        TickGapTracker tg = BetterAutoSaveCore.tickGapTracker();
+        if (tg == null) {
+            ctx.getSource().sendFailure(Component.literal("TickGapTracker not initialized"));
+            return 0;
+        }
+        sl.clear();
+        tg.clear();
+        SyncLoadStackCapture.resetFailures();
+        // 采集失败计数两处都要清: diagnose 把它们打在同一行, 只清一半会让运维以为 reset 没生效。
+        ModAttribution.resetLookupFailures();
+        // 统计清零后, 同一个调用点理应能重新打出那一行人类可读的证据, 否则 reset 之后的日志是哑的。
+        SyncLoadDetector.resetLogDedup();
+        TickGapDetector.resetLogThrottle();
+        ctx.getSource().sendSuccess(() -> Component.literal(
+                "diagnose reset: sync-load and tick-gap trackers cleared; cumulative counters "
+                        + "(bas_sync_load_stalls_total, bas_tick_gap_exceeded_total, bas_tick_gap_max_seconds) "
+                        + "are intentionally retained because Prometheus counters must stay monotonic"), false);
+        return 1;
     }
 
     private static String formatNs(long ns) {

@@ -48,6 +48,14 @@ public final class SaveMetrics {
         return String.valueOf(ns / 1000);
     }
 
+    /**
+     * 格式化纳秒为整毫秒字符串. 诊断路径 (同步区块加载阈值 50ms, tick gap 阈值 1000ms) 的实测量级
+     * 是秒级, 用 {@link #formatLatencyUs} 的微秒口径会得到 5188000 这种不可读数字, 故单开毫秒出口.
+     */
+    public static String formatMs(long ns) {
+        return (ns / 1_000_000L) + "ms";
+    }
+
     private final LongAdder chunksSubmitted = new LongAdder();
     private final LongAdder chunksCompleted = new LongAdder();
     private final LongAdder chunksFailed = new LongAdder();
@@ -94,6 +102,14 @@ public final class SaveMetrics {
     // 队列深度量待处理积压, 本 gauge 量正在解析的占用。v2.1 L1 后 read 整段无锁并行 (LoadCodecGuard 只串行结构解码
     // 微秒切片), 故该值峰值到 loadWorkerThreads 即表 worker 全忙在真并行解析。
     private final AtomicLong inFlightLoadParsing = new AtomicLong();
+
+    // 诊断路径 (v0.20): 主线程同步区块加载与 tick 间停顿. 这两类阻塞的成因通常在 BAS 之外
+    // (第三方 mod 的调用模式), 但由 BAS 观测并计数, 因为 tick 之间的停顿不计入 MSPT, 监控面板看不到。
+    private final LongAdder syncLoadStalls = new LongAdder();
+    private final LongAdder syncLoadStallNs = new LongAdder();
+    private final LongAdder tickGapExceeded = new LongAdder();
+    // 语义是历史最大值而非累加, 故用 AtomicLong 走 CAS max 而不是 LongAdder。
+    private final AtomicLong tickGapMaxNs = new AtomicLong();
 
     public void recordChunkSubmitted() {
         chunksSubmitted.increment();
@@ -243,6 +259,30 @@ public final class SaveMetrics {
         inFlightLoadParsing.decrementAndGet();
     }
 
+    /**
+     * 阈值判定由调用方 (SyncLoadDetector) 完成: 本方法被调用即代表这一次同步加载已超过配置阈值,
+     * 计数与耗时累加天然成对, 故合并成一个方法避免调用方漏调一半。
+     */
+    public void recordSyncLoadStall(long nanos) {
+        syncLoadStalls.increment();
+        syncLoadStallNs.add(nanos);
+    }
+
+    /**
+     * 阈值判定由调用方 (TickGapDetector) 完成: 本方法被调用即代表这一次 tick 间停顿已超过配置阈值。
+     * tickGapMaxNs 取历史最大值, CAS 循环写法与 {@link Histogram#add} 的 max 更新段保持一致。
+     */
+    public void recordTickGap(long nanos) {
+        tickGapExceeded.increment();
+        long prev;
+        do {
+            prev = tickGapMaxNs.get();
+            if (nanos <= prev) {
+                return;
+            }
+        } while (!tickGapMaxNs.compareAndSet(prev, nanos));
+    }
+
     public Snapshot snapshot() {
         return new Snapshot(
                 chunksSubmitted.sum(),
@@ -277,7 +317,11 @@ public final class SaveMetrics {
                 chunksLoadFallback.sum(),
                 loadDeserializeNs.snapshot(),
                 loadWorkerQueueDepth.get(),
-                inFlightLoadParsing.get()
+                inFlightLoadParsing.get(),
+                syncLoadStalls.sum(),
+                syncLoadStallNs.sum(),
+                tickGapExceeded.sum(),
+                tickGapMaxNs.get()
         );
     }
 
@@ -377,7 +421,11 @@ public final class SaveMetrics {
             long chunksLoadFallback,
             HistogramSnapshot loadDeserialize,
             long loadWorkerQueueDepth,
-            long inFlightLoadParsing
+            long inFlightLoadParsing,
+            long syncLoadStalls,
+            long syncLoadStallNs,
+            long tickGapExceeded,
+            long tickGapMaxNs
     ) {
     }
 }

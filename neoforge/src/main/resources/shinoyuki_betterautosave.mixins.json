@@ -11,12 +11,14 @@
     "EntityStorageMixin",
     "MinecraftServerMixin",
     "SavedDataMixin",
+    "ServerChunkCacheSyncLoadMixin",
     "accessor.ChunkMapAccessor",
     "accessor.ChunkSerializerInvoker",
     "accessor.ChunkStorageAccessor",
     "accessor.DimensionDataStorageInvoker",
     "accessor.EntityStorageAccessor",
-    "accessor.SimpleRegionStorageAccessor"
+    "accessor.SimpleRegionStorageAccessor",
+    "accessor.TickTaskAccessor"
   ],
   "client": [],
   "server": [],

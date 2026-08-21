@@ -63,6 +63,14 @@ public final class ConfigSpec {
     public static final ForgeConfigSpec.BooleanValue LOAD_POI_PREFETCH;
     public static final ForgeConfigSpec.BooleanValue DIAGNOSTIC_LOGGING;
     public static final ForgeConfigSpec.IntValue DIAGNOSTIC_LOG_INTERVAL_TICKS;
+    public static final ForgeConfigSpec.BooleanValue SYNC_LOAD_DETECTION;
+    public static final ForgeConfigSpec.IntValue SYNC_LOAD_THRESHOLD_MS;
+    public static final ForgeConfigSpec.IntValue SYNC_LOAD_TRACK_LIMIT;
+    public static final ForgeConfigSpec.IntValue SYNC_LOAD_STACK_DEPTH;
+    public static final ForgeConfigSpec.BooleanValue TICK_GAP_DETECTION;
+    public static final ForgeConfigSpec.IntValue TICK_GAP_THRESHOLD_MS;
+    public static final ForgeConfigSpec.BooleanValue TICK_GAP_DEEP_ATTRIBUTION;
+    public static final ForgeConfigSpec.IntValue TICK_GAP_DEEP_TRACK_LIMIT;
     public static final ForgeConfigSpec.BooleanValue PROMETHEUS_ENABLED;
     public static final ForgeConfigSpec.ConfigValue<String> PROMETHEUS_BIND_ADDRESS;
     public static final ForgeConfigSpec.IntValue PROMETHEUS_PORT;
@@ -533,6 +541,73 @@ public final class ConfigSpec {
                 .comment("How often diagnostic summaries are emitted, in server ticks (20 ticks = 1s).",
                          "Default 6000 (5 min). The dev-era default was 200 (10s) - far too chatty for production.")
                 .defineInRange("diagnosticLogIntervalTicks", 6000, 20, 72000);
+
+        SYNC_LOAD_DETECTION = BUILDER
+                .comment("Detect and report main-thread synchronous chunk loads (a third-party mod calling",
+                         "ServerChunkCache.getChunk for a chunk that is not resident stalls the server thread until",
+                         "disk IO and generation finish).",
+                         "Default true: the instrumented call site is only reached on a 4-slot cache miss, and a stack",
+                         "is captured only when a single load exceeds syncLoadThresholdMs.",
+                         "Detected stalls are usually caused by another mod's call pattern and do not by themselves",
+                         "indicate a defect in that mod.",
+                         "Hot-reloadable.")
+                .define("syncLoadDetection", true);
+
+        SYNC_LOAD_THRESHOLD_MS = BUILDER
+                .comment("A single main-thread chunk load blocking at least this long (milliseconds) is recorded with",
+                         "its call stack.",
+                         "Default 50: one server tick is 50ms, so anything at or above this cost a full tick or more.",
+                         "Lower values capture more events and more stacks; raise it on servers that legitimately",
+                         "stream chunks from cold storage.",
+                         "Hot-reloadable.")
+                .defineInRange("syncLoadThresholdMs", 50, 1, 60_000);
+
+        SYNC_LOAD_TRACK_LIMIT = BUILDER
+                .comment("LRU eviction limit: max number of distinct (attribution, stack) pairs tracked simultaneously.",
+                         "Default 64: distinct sync-load call sites are few; the limit exists to bound memory, not to sample.",
+                         "TAKES EFFECT AT STARTUP: the tracker is constructed once when the server starts.")
+                .defineInRange("syncLoadTrackLimit", 64, 8, 4096);
+
+        SYNC_LOAD_STACK_DEPTH = BUILDER
+                .comment("How many non-vanilla stack frames are retained per captured stall.",
+                         "Frames in net.minecraft, java, jdk, sun, com.mojang, com.llamalad7, org.spongepowered and",
+                         "BetterAutoSave's own diagnostic and mixin packages are skipped; the first remaining frame is",
+                         "used as the attribution key.",
+                         "Default 24: deep enough to cross an event-dispatch chain, shallow enough to keep log lines readable.",
+                         "Hot-reloadable.")
+                .defineInRange("syncLoadStackDepth", 24, 4, 128);
+
+        TICK_GAP_DETECTION = BUILDER
+                .comment("Detect long pauses that happen between server ticks (inside waitUntilNextTick), which are",
+                         "invisible to MSPT and to most monitoring dashboards.",
+                         "Default true: the cost is two System.nanoTime() calls per tick.",
+                         "Hot-reloadable.")
+                .define("tickGapDetection", true);
+
+        TICK_GAP_THRESHOLD_MS = BUILDER
+                .comment("An inter-tick gap of at least this long (milliseconds) is recorded.",
+                         "Default 1000: a healthy server spends at most ~50ms between ticks, so one second already means",
+                         "a whole second of wall clock unaccounted for by MSPT.",
+                         "When tickGapDeepAttribution is on, one tenth of this value is also used as the per-task",
+                         "threshold of the deep-attribution table.",
+                         "Hot-reloadable.")
+                .defineInRange("tickGapThresholdMs", 1000, 50, 600_000);
+
+        TICK_GAP_DEEP_ATTRIBUTION = BUILDER
+                .comment("Additionally time every individual task run by the server task queue, so a long inter-tick gap",
+                         "can be attributed to the task that caused it.",
+                         "Default false: this instruments MinecraftServer.doRunTask, which executes hundreds of times per",
+                         "tick; enabling it adds two System.nanoTime() calls per task (a few microseconds per tick).",
+                         "Turn it on only while investigating a gap already reported by tickGapDetection, then turn it",
+                         "back off.",
+                         "Hot-reloadable.")
+                .define("tickGapDeepAttribution", false);
+
+        TICK_GAP_DEEP_TRACK_LIMIT = BUILDER
+                .comment("LRU eviction limit for the deep-attribution table (one entry per distinct task type).",
+                         "Ignored unless tickGapDeepAttribution is true.",
+                         "TAKES EFFECT AT STARTUP.")
+                .defineInRange("tickGapDeepTrackLimit", 64, 8, 4096);
 
         BUILDER.pop();
 

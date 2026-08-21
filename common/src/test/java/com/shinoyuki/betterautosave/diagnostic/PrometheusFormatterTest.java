@@ -124,10 +124,46 @@ class PrometheusFormatterTest {
                         "所有 metric 名必须以 bas_ 开头, 违反: " + name);
             }
         }
-        // 17 counter + 5 gauge + 4 histogram = 26 个 # TYPE 声明, 防漏报.
-        // entity 无调度队列深度指标 (无 bas_entity_queue_depth gauge), gauge 数为 5.
-        assertEquals(26, typeCount,
-                "应输出 17+5+4=26 个 # TYPE 行, actual=" + typeCount);
+        // 20 counter + 6 gauge + 4 histogram = 30 个 # TYPE 声明, 防漏报.
+        // entity 无调度队列深度指标 (无 bas_entity_queue_depth gauge); v0.20 诊断路径新增
+        // 3 counter (sync_load_stalls / sync_load_stall_seconds / tick_gap_exceeded) 与 1 gauge (tick_gap_max_seconds).
+        assertEquals(30, typeCount,
+                "应输出 20+6+4=30 个 # TYPE 行, actual=" + typeCount);
+    }
+
+    @Test
+    void diagnostic_metrics_are_exported() {
+        SaveMetrics m = new SaveMetrics();
+        m.recordSyncLoadStall(5_188_000_000L);
+        m.recordSyncLoadStall(5_188_000_000L);
+        m.recordTickGap(17_100_000_000L);
+
+        String out = PrometheusFormatter.format(m.snapshot());
+        assertTrue(out.contains("\nbas_sync_load_stalls_total 2\n"),
+                "同步加载停顿计数应为 2:\n" + out);
+        assertTrue(out.contains("\nbas_tick_gap_exceeded_total 1\n"),
+                "tick gap 超阈值计数应为 1:\n" + out);
+        assertTrue(out.contains("\nbas_sync_load_stall_seconds_total 10.376\n"),
+                "累计阻塞纳秒应转秒输出 10.376:\n" + out);
+        assertTrue(out.contains("\nbas_tick_gap_max_seconds 17.1\n"),
+                "最长 tick gap 应转秒输出 17.1:\n" + out);
+        assertTrue(out.contains("# TYPE bas_sync_load_stall_seconds_total counter\n"),
+                "秒值累加量必须声明为 counter:\n" + out);
+        assertTrue(out.contains("# TYPE bas_tick_gap_max_seconds gauge\n"),
+                "历史最大值必须声明为 gauge 而非 counter:\n" + out);
+    }
+
+    @Test
+    void diagnostic_seconds_metrics_do_not_leak_raw_nanoseconds() {
+        SaveMetrics m = new SaveMetrics();
+        m.recordSyncLoadStall(5_188_000_000L);
+        m.recordTickGap(17_100_000_000L);
+
+        String out = PrometheusFormatter.format(m.snapshot());
+        assertFalse(out.contains("5188000000"),
+                "_seconds_total 指标不得输出纳秒原值:\n" + out);
+        assertFalse(out.contains("17100000000"),
+                "_seconds gauge 不得输出纳秒原值:\n" + out);
     }
 
     @Test

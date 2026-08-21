@@ -14,6 +14,8 @@ import com.shinoyuki.betterautosave.diagnostic.ChunkLatencyTracker;
 import com.shinoyuki.betterautosave.diagnostic.DiagnosticLogger;
 import com.shinoyuki.betterautosave.diagnostic.PrometheusExporter;
 import com.shinoyuki.betterautosave.diagnostic.SaveMetrics;
+import com.shinoyuki.betterautosave.diagnostic.SyncLoadTracker;
+import com.shinoyuki.betterautosave.diagnostic.TickGapTracker;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
@@ -70,12 +72,21 @@ public final class BetterAutoSaveMod {
                 BetterAutoSaveConfig.deadlineGuardSeconds(), BetterAutoSaveConfig::adaptiveEnabled);
         AsyncIoBridge ioBridge = new AsyncIoBridge();
         SnapshotPipeline pipeline = new SnapshotPipeline(scheduler, ioBridge, metrics);
-        DiagnosticLogger diagnosticLogger = new DiagnosticLogger(metrics,
-                BetterAutoSaveConfig::diagnosticLogging, BetterAutoSaveConfig::diagnosticLogIntervalTicks);
         SaveDispatcher dispatcher = new SaveDispatcher(pipeline, metrics);
         ChunkLatencyTracker latencyTracker = new ChunkLatencyTracker(
                 BetterAutoSaveConfig.hottestChunksWindowSize(),
                 BetterAutoSaveConfig.hottestChunksTrackLimit());
+        // v0.20: 两个诊断 tracker 必须先于 DiagnosticLogger 构造 —— 周期摘要要读它们。
+        // trackLimit 在这里冻结 (与 hottestChunks 同规矩), 故配置注释里标注为需重启生效。
+        SyncLoadTracker syncLoadTracker = new SyncLoadTracker(
+                SyncLoadTracker.DEFAULT_WINDOW_SIZE,
+                BetterAutoSaveConfig.syncLoadTrackLimit());
+        TickGapTracker tickGapTracker = new TickGapTracker(
+                TickGapTracker.DEFAULT_WINDOW_SIZE,
+                BetterAutoSaveConfig.tickGapDeepTrackLimit());
+        DiagnosticLogger diagnosticLogger = new DiagnosticLogger(metrics,
+                BetterAutoSaveConfig::diagnosticLogging, BetterAutoSaveConfig::diagnosticLogIntervalTicks,
+                syncLoadTracker, tickGapTracker);
 
         pipeline.setChunkResolutionHook(dispatcher);
         pipeline.setLatencyTracker(latencyTracker);
@@ -83,6 +94,8 @@ public final class BetterAutoSaveMod {
 
         BetterAutoSaveCore.install(metrics, scheduler, pipeline, ioBridge, diagnosticLogger);
         BetterAutoSaveCore.setLatencyTracker(latencyTracker);
+        BetterAutoSaveCore.setSyncLoadTracker(syncLoadTracker);
+        BetterAutoSaveCore.setTickGapTracker(tickGapTracker);
         // issue #25: level.dat 注册表快照缓存. 必须晚于 install 才可见 (mixin 以 cache != null 作为
         // "服务器已起"的唯一判据), 且随 uninstall 一并置空, 保证客户端"连远程服 -> 退回单人"时
         // 上一轮的缓存不会跨 server 实例复用。

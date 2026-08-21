@@ -73,6 +73,17 @@ public final class PrometheusFormatter {
                 "SavedData routed to vanilla synchronous (file too large or mod serialization threw)",
                 snap.savedDataFallback());
 
+        // 诊断路径 counter (v0.20)
+        counter(sb, "bas_sync_load_stalls_total",
+                "Main-thread synchronous chunk loads exceeding the configured threshold (cumulative)",
+                snap.syncLoadStalls());
+        counterSeconds(sb, "bas_sync_load_stall_seconds_total",
+                "Total main-thread time blocked in synchronous chunk loads over threshold",
+                snap.syncLoadStallNs());
+        counter(sb, "bas_tick_gap_exceeded_total",
+                "Inter-tick gaps exceeding the configured threshold (cumulative)",
+                snap.tickGapExceeded());
+
         // gauge
         gauge(sb, "bas_must_drain_pending",
                 "Number of chunks pending mustDrain (v0.4 unload/eager save)", snap.mustDrainPending());
@@ -84,6 +95,9 @@ public final class PrometheusFormatter {
                 "Snapshots currently in SERIALIZING state", snap.inFlightSerializing());
         gauge(sb, "bas_in_flight_io_pending",
                 "Snapshots currently in IO_PENDING state", snap.inFlightIoPending());
+        // gauge 而非 counter: 语义是"服务器启动以来观测到的最长一次", 不是累加量.
+        gaugeSeconds(sb, "bas_tick_gap_max_seconds",
+                "Longest inter-tick gap observed since server start", snap.tickGapMaxNs());
 
         // histogram
         histogram(sb, "bas_main_thread_capture_seconds",
@@ -108,6 +122,19 @@ public final class PrometheusFormatter {
         sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
         sb.append("# TYPE ").append(name).append(" gauge\n");
         sb.append(name).append(' ').append(value).append('\n');
+    }
+
+    /** 纳秒累加量按 Prometheus 惯例导出为秒; counter()/gauge() 只收 long, 无法承载小数秒. */
+    private static void counterSeconds(StringBuilder sb, String name, String help, long nanos) {
+        sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
+        sb.append("# TYPE ").append(name).append(" counter\n");
+        sb.append(name).append(' ').append(secondsString(nanos)).append('\n');
+    }
+
+    private static void gaugeSeconds(StringBuilder sb, String name, String help, long nanos) {
+        sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
+        sb.append("# TYPE ").append(name).append(" gauge\n");
+        sb.append(name).append(' ').append(secondsString(nanos)).append('\n');
     }
 
     private static void histogram(StringBuilder sb, String name, String help, HistogramSnapshot h) {

@@ -39,6 +39,14 @@ public final class BetterAutoSaveConfig {
     private static volatile int playerDataStaggerMaxPerTick;
     private static volatile boolean diagnosticLogging;
     private static volatile int diagnosticLogIntervalTicks;
+    private static volatile boolean syncLoadDetection;
+    private static volatile int syncLoadThresholdMs;
+    private static volatile int syncLoadTrackLimit;
+    private static volatile int syncLoadStackDepth;
+    private static volatile boolean tickGapDetection;
+    private static volatile int tickGapThresholdMs;
+    private static volatile boolean tickGapDeepAttribution;
+    private static volatile int tickGapDeepTrackLimit;
     private static volatile boolean prometheusEnabled;
     private static volatile String prometheusBindAddress;
     private static volatile int prometheusPort;
@@ -166,6 +174,38 @@ public final class BetterAutoSaveConfig {
         return diagnosticLogIntervalTicks;
     }
 
+    public static boolean syncLoadDetection() {
+        return syncLoadDetection;
+    }
+
+    public static int syncLoadThresholdMs() {
+        return syncLoadThresholdMs;
+    }
+
+    public static int syncLoadTrackLimit() {
+        return syncLoadTrackLimit;
+    }
+
+    public static int syncLoadStackDepth() {
+        return syncLoadStackDepth;
+    }
+
+    public static boolean tickGapDetection() {
+        return tickGapDetection;
+    }
+
+    public static int tickGapThresholdMs() {
+        return tickGapThresholdMs;
+    }
+
+    public static boolean tickGapDeepAttribution() {
+        return tickGapDeepAttribution;
+    }
+
+    public static int tickGapDeepTrackLimit() {
+        return tickGapDeepTrackLimit;
+    }
+
     public static boolean prometheusEnabled() {
         return prometheusEnabled;
     }
@@ -230,6 +270,14 @@ public final class BetterAutoSaveConfig {
         playerDataStaggerMaxPerTick = ConfigSpec.PLAYER_DATA_STAGGER_MAX_PER_TICK.get();
         diagnosticLogging = ConfigSpec.DIAGNOSTIC_LOGGING.get();
         diagnosticLogIntervalTicks = ConfigSpec.DIAGNOSTIC_LOG_INTERVAL_TICKS.get();
+        syncLoadDetection = ConfigSpec.SYNC_LOAD_DETECTION.get();
+        syncLoadThresholdMs = ConfigSpec.SYNC_LOAD_THRESHOLD_MS.get();
+        syncLoadTrackLimit = ConfigSpec.SYNC_LOAD_TRACK_LIMIT.get();
+        syncLoadStackDepth = ConfigSpec.SYNC_LOAD_STACK_DEPTH.get();
+        tickGapDetection = ConfigSpec.TICK_GAP_DETECTION.get();
+        tickGapThresholdMs = ConfigSpec.TICK_GAP_THRESHOLD_MS.get();
+        tickGapDeepAttribution = ConfigSpec.TICK_GAP_DEEP_ATTRIBUTION.get();
+        tickGapDeepTrackLimit = ConfigSpec.TICK_GAP_DEEP_TRACK_LIMIT.get();
         prometheusEnabled = ConfigSpec.PROMETHEUS_ENABLED.get();
         prometheusBindAddress = ConfigSpec.PROMETHEUS_BIND_ADDRESS.get();
         prometheusPort = ConfigSpec.PROMETHEUS_PORT.get();

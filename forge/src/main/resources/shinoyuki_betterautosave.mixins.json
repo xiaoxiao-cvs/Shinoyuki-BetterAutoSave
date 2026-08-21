@@ -24,12 +24,14 @@
     "SavedDataMixin",
     "ServerStatsCounterSaveMixin",
     "SectionStorageLoadMixin",
+    "ServerChunkCacheSyncLoadMixin",
     "accessor.ChunkAccessAccessor",
     "accessor.ChunkMapAccessor",
     "accessor.ChunkSerializerInvoker",
     "accessor.ChunkStorageAccessor",
     "accessor.DimensionDataStorageInvoker",
-    "accessor.EntityStorageAccessor"
+    "accessor.EntityStorageAccessor",
+    "accessor.TickTaskAccessor"
   ],
   "client": [],
   "server": [],
