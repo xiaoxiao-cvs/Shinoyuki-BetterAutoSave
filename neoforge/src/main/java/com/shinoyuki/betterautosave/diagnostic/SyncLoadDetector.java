@@ -61,8 +61,7 @@ public final class SyncLoadDetector {
 
         String[] frames = SyncLoadStackCapture.capture(BetterAutoSaveConfig.syncLoadStackDepth());
         String first = SyncLoadStackCapture.attributionOf(frames);
-        String modId = ModAttribution.modIdOf(first);
-        String attribution = modId != null ? modId : first;
+        String attribution = resolveAttribution(frames, first);
         String dimensionId = level != null ? level.dimension().location().toString() : "unknown";
         String fingerprint = SyncLoadTracker.fingerprint(frames);
 
@@ -79,6 +78,32 @@ public final class SyncLoadDetector {
         } else {
             SUPPRESSED_WARNS.increment();
         }
+    }
+
+    /**
+     * 两级归因。第一级: 栈里若有属于某个 mod 的类, 归因到那个 mod —— 这是"第三方发起的同步取图"
+     * (issue 里最常见的 Flan 那类)。第二级: 整条栈都是 vanilla 时退回最内层帧本身, 因为那正是
+     * "原版自身发起"这个结论, 且帧名 (例如 Entity#updateFluidHeightAndDoFluidPushing 与
+     * Entity#getOnPosLegacy) 直接指明了触发场景。
+     *
+     * <p>vanilla 帧不查 modid: loader 把 minecraft 也登记成一个 mod, 查了会让每条全 vanilla 的栈
+     * 都归因成 "minecraft", 把上面那个结论盖掉。
+     */
+    private static String resolveAttribution(String[] frames, String fallback) {
+        if (frames == null) {
+            return fallback;
+        }
+        for (String frame : frames) {
+            String className = SyncLoadStackCapture.classOf(frame);
+            if (SyncLoadStackCapture.isVanilla(className)) {
+                continue;
+            }
+            String modId = ModAttribution.modIdOf(className);
+            if (modId != null) {
+                return modId;
+            }
+        }
+        return fallback;
     }
 
     /** 因去重集合封顶而未打出的 warn 行数。diagnose 用它把"被封顶吞掉"与"没发生"区分开。 */
