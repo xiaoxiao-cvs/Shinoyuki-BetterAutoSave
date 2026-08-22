@@ -276,7 +276,9 @@ The Prometheus exporter gains four metrics:
 
 Mind the order when upgrading to 0.20.0: replace the jar and restart first so the new build writes these 8 keys into `common.toml`, then edit them. Editing the config before swapping the jar lets the running old build drop keys it does not recognize during config correction.
 
-One failure mode worth knowing: with a mod that rewrites the chunk-fetch path installed alongside (something in the C2ME family), the instrumented call may no longer exist and the probe cannot attach. Sync load detection then silently does nothing rather than failing the server's startup — a purely observational feature is not worth a boot crash. The symptom is `bas_sync_load_stalls_total` staying at 0 while the server visibly stalls.
+One failure mode worth knowing: with a mod that rewrites the chunk-fetch path installed alongside (something in the C2ME family), the instrumented call may no longer exist, the probe cannot attach, and sync load detection does nothing. The symptom is `bas_sync_load_stalls_total` staying at 0 while the server visibly stalls.
+
+One class of these is reported explicitly. Lithium ports (Harium / Radium / Canary) `@Overwrite` `ServerChunkCache.getChunk` wholesale; since v0.20.1 BAS detects them at startup, skips this mixin and logs a WARN naming the mod responsible. v0.20.0 relied solely on `require = 0` on the injector to cover this case, but Mixin's priority check runs before the require check, so the real outcome was a startup crash rather than a silent skip. See "Startup gating of the sync-load detector" in `docs/COMPATIBILITY.md` for the mechanism and the full list.
 
 ## 9. Working with backup tools
 
