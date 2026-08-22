@@ -53,7 +53,7 @@ C2ME-Forge was archived on 2025-07-12, so the overlap is rare in practice.
 | Mod | Reasoning |
 |---|---|
 | Starlight (Forge 1.20.1) | BAS only reads DataLayer through the public `getDataLayerData()` API, which Starlight must keep honoring (vanilla saving uses it too); `DataLayer.copy()` is a `byte[].clone` and is decoupled from the light engine implementation |
-| Radium / Canary (Lithium ports) | Change entity and block ticking, not the save path |
+| Radium / Canary / Harium (Lithium ports) | Change entity and block ticking, not the save path. They do `@Overwrite` `ServerChunkCache.getChunk`, so BAS automatically turns off its sync-load detector when one of them is present (see "Startup gating of the sync-load detector" below); saving and async loading are unaffected |
 | Modernfix | Memory and startup optimization, does not touch the save path |
 | FerriteCore | Changes BlockState memory representation; BAS goes through the standard `PalettedContainer.copy()` |
 | Embeddium / Rubidium | Client-side rendering, unrelated to server-side saving |
@@ -97,6 +97,21 @@ If unsure, keep `load.enabled=false` or use `loadEventCompatMode=FULL`.
 This exists so BAS can coexist with mods that rewrite `scheduleChunkLoad` / `ChunkSerializer.read`, such as C2ME-Forge — otherwise `defaultRequire=1` would turn that into a hard InjectionError crash at startup.
 
 The cost is that turning it from off to on requires a server restart; config hot-reload alone cannot enable it (turning it back off does hot-reload instantly). A missing config file, a read failure, or a missing section or key are all treated as off.
+
+### Startup gating of the sync-load detector
+
+`ServerChunkCacheSyncLoadMixin` (the main-thread synchronous chunk load detector added in v0.20) wraps the `managedBlock` call inside `ServerChunkCache.getChunk` with `@WrapOperation`. It declares `require = 0`, intending "if the injection point disappears, skip silently rather than crash".
+
+`require = 0` does not cover a second failure mode, however. When another mod `@Overwrite`s `getChunk`, Mixin throws `InvalidInjectionException` from `Injector.findTargetNodes` because the injector's priority is not higher than that of the mixin which already merged the method — and that check runs *before* the require hit-count check. The resulting `MixinTransformerError` propagates to `MinecraftServer` and crashes startup.
+
+Since v0.20.1 the same `IMixinConfigPlugin` therefore evaluates two extra conditions at class-load time; if either holds, this mixin is not applied at all:
+
+1. `diagnostics.syncLoadDetection` is `false` in the on-disk `common.toml` (a missing file, section or key defaults to `true`);
+2. a mod known to `@Overwrite getChunk` is present: `harium`, `radium`, `canary`, `lithium`.
+
+When the gate closes, a `WARN` line names the mod that triggered it — otherwise "I installed 0.20 but never see any sync-load reports" would be unexplainable. **Saving, async loading and every other feature are unaffected by this gate.**
+
+If a similar mod appears that is not on the list, set `diagnostics.syncLoadDetection` to `false` and restart (condition 1); no version update is needed.
 
 ## 6. Injection points
 

@@ -1,10 +1,9 @@
 package com.shinoyuki.betterautosave.mixin;
 
 import com.shinoyuki.betterautosave.BetterAutoSaveMod;
-import com.shinoyuki.betterautosave.config.LoadMixinGate;
 import com.shinoyuki.betterautosave.diagnostic.SyncLoadMixinGate;
-import net.minecraftforge.fml.loading.LoadingModList;
-import net.minecraftforge.fml.loading.FMLPaths;
+import net.neoforged.fml.loading.FMLPaths;
+import net.neoforged.fml.loading.LoadingModList;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.objectweb.asm.tree.ClassNode;
@@ -17,13 +16,15 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 按 load.enabled 门控四个异步加载 (opt-in, 默认 false) 的 load 侧 mixin 的应用: 关闭时字节码零介入, 使与重写
- * scheduleChunkLoad / ChunkSerializer.read 的 mod (C2ME-forge) 共存时不因目标 INVOKE 消失在启动期硬崩
- * (defaultRequire=1 下 InjectionError = FML 致命崩溃), 恢复 opt-in 的安全预期。save 侧 mixin 与 accessor 恒应用。
+ * v0.20.1: 门控 {@code ServerChunkCacheSyncLoadMixin} 的应用, 与 forge 侧同名类对称。
  *
- * <p>门控依据只能读磁盘 common.toml (shouldApplyMixin 早于 Forge config 加载, 见 {@link LoadMixinGate})。因此改
- * load.enabled 需重启服务器才改变 mixin 应用 —— 运行期 config 热重载不改已定的字节码。load.enabled 开启时若装了
- * 重写这些点的 mod, 仍按项目 数据安全>稳定性 取舍"响亮早崩", 不 fail-soft 放任两套 off-thread IO 并存。
+ * <p>本平台没有异步加载 (load 侧 mixin 是 forge 独有), 因此这里只有同步加载检测器这一条门控;
+ * 判据全部落在 common 的 {@link SyncLoadMixinGate} 里, 双平台共用同一套规则与同一批单测。
+ *
+ * <p>触发条件与 forge 侧完全相同: 同装 {@code @Overwrite ServerChunkCache.getChunk} 的 mod 时,
+ * Mixin 在优先级判定处抛 {@code InvalidInjectionException} 直接崩服, 该 mixin 上的 {@code require = 0}
+ * 拦不住 —— 详见 {@link SyncLoadMixinGate} 的类注释与实测异常原文。1.21.1 上 Lithium 系同样在场,
+ * 故必须对称处理, 不能因为崩溃报告来自 1.20.1 就只修一侧。
  */
 public final class BetterAutoSaveMixinPlugin implements IMixinConfigPlugin {
 
@@ -31,10 +32,7 @@ public final class BetterAutoSaveMixinPlugin implements IMixinConfigPlugin {
     // MOD_ID 是编译期常量, javac 内联后不留类引用, 故可继续用。
     private static final Logger LOGGER = LogManager.getLogger("BetterAutoSave");
 
-    // 一次读盘缓存: 每个 mixin 调一次 shouldApplyMixin, 避免重复解析 toml。
-    private Boolean loadEnabled;
-
-    // 同上, 外加一次 LoadingModList 遍历。
+    // 一次判定缓存: 每个 mixin 都会调 shouldApplyMixin, 避免重复读盘与重复遍历 mod 列表。
     private Boolean syncLoadApplicable;
 
     @Override
@@ -51,17 +49,9 @@ public final class BetterAutoSaveMixinPlugin implements IMixinConfigPlugin {
         if (SyncLoadMixinGate.isSyncLoadMixin(mixinClassName)) {
             return isSyncLoadApplicable();
         }
-        if (!LoadMixinGate.isLoadSideMixin(mixinClassName)) {
-            return true;
-        }
-        return isLoadEnabled();
+        return true;
     }
 
-    /**
-     * 同步加载检测器能否注入。见 {@link SyncLoadMixinGate} 的类注释: 与 {@code @Overwrite getChunk} 的 mod
-     * 同装时, Mixin 会在优先级判定处直接抛 {@code InvalidInjectionException} 并崩服, 该 mixin 上的
-     * {@code require = 0} 拦不住。这里提前退出, 把失败模式还原成"诊断不生效"。
-     */
     private boolean isSyncLoadApplicable() {
         Boolean cached = syncLoadApplicable;
         if (cached != null) {
@@ -82,7 +72,7 @@ public final class BetterAutoSaveMixinPlugin implements IMixinConfigPlugin {
             // warn 而不是 info: 用户装了 0.20 却看不到任何同步加载报告时, 这一行是唯一的解释。
             LOGGER.warn("[BetterAutoSave] sync chunk load detector disabled: mod '{}' overwrites "
                     + "ServerChunkCache.getChunk, which Mixin will not let us wrap. "
-                    + "Async saving and loading are unaffected.", conflict);
+                    + "Async saving is unaffected.", conflict);
             return false;
         }
         return true;
@@ -104,16 +94,6 @@ public final class BetterAutoSaveMixinPlugin implements IMixinConfigPlugin {
                     + "sync chunk load detector will be applied as usual", t.toString());
             return List.of();
         }
-    }
-
-    private boolean isLoadEnabled() {
-        Boolean cached = loadEnabled;
-        if (cached != null) {
-            return cached;
-        }
-        boolean enabled = LoadMixinGate.readLoadEnabled(configPath());
-        loadEnabled = enabled;
-        return enabled;
     }
 
     private static Path configPath() {

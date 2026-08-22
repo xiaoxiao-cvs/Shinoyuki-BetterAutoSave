@@ -53,7 +53,7 @@ C2ME-Forge 已于 2025-07-12 archived，实际同装的情况很少。
 | Mod | 判定依据 |
 |---|---|
 | Starlight（Forge 1.20.1） | BAS 只用公共 API `getDataLayerData()` 读 DataLayer，Starlight 必须保持该 API 契约（原版存盘也用它）；`DataLayer.copy()` 是 `byte[].clone`，与底层光照引擎实现解耦 |
-| Radium / Canary（Lithium 移植版） | 改实体与方块 tick，不碰存盘路径 |
+| Radium / Canary / Harium（Lithium 移植版） | 改实体与方块 tick，不碰存盘路径。但它们用 `@Overwrite` 接管 `ServerChunkCache.getChunk`，同装时 BAS 会自动关闭同步加载检测器（见下节「同步加载检测器的启动期门控」）；存盘与异步加载不受影响 |
 | Modernfix | 内存与启动优化，不碰存盘路径 |
 | FerriteCore | 改 BlockState 内存表示，BAS 走标准的 `PalettedContainer.copy()` |
 | Embeddium / Rubidium | 客户端渲染，与服务端存盘无关 |
@@ -97,6 +97,21 @@ C2ME-Forge 已于 2025-07-12 archived，实际同装的情况很少。
 这样设计是为了与 C2ME-Forge 这类重写 `scheduleChunkLoad` / `ChunkSerializer.read` 的 mod 共存 —— 否则在 `defaultRequire=1` 下会直接 InjectionError 启动硬崩。
 
 代价是：从关改开必须重启服务器，光靠配置热重载启用不了（改回关则热重载即刻生效）。配置文件缺失、读失败、缺段或缺键一律按关处理。
+
+### 同步加载检测器的启动期门控
+
+`ServerChunkCacheSyncLoadMixin`（v0.20 引入的主线程同步区块加载检测）用 `@WrapOperation` 包住 `ServerChunkCache.getChunk` 里的 `managedBlock` 调用。它写了 `require = 0`，本意是「注入点消失时静默跳过，不崩服」。
+
+但 `require = 0` 兜不住另一种失败：当别的 mod 用 `@Overwrite` 接管了 `getChunk`，Mixin 会在 `Injector.findTargetNodes` 里以「注入器优先级不高于已 merge 该方法的 mixin」为由直接抛 `InvalidInjectionException`，而这条判定发生在 require 的命中数检查之前。结果是 `MixinTransformerError` 冒到 `MinecraftServer`，启动崩服。
+
+因此从 v0.20.1 起，同一个 `IMixinConfigPlugin` 会在类加载期额外判定两件事，任一成立就完全不注入这个 mixin：
+
+1. `diagnostics.syncLoadDetection` 在磁盘 `common.toml` 里是 `false`（缺文件、缺段或缺键按默认值 `true` 处理）；
+2. 在场 mod 里有已知会 `@Overwrite getChunk` 的：`harium`、`radium`、`canary`、`lithium`。
+
+被门控关闭时会打一行 `WARN` 说明是哪个 mod 触发的 —— 否则「装了 0.20 却看不到任何同步加载报告」将无从解释。**存盘、异步加载与其余全部功能不受此门控影响。**
+
+若将来出现未列入名单的同类 mod，把 `diagnostics.syncLoadDetection` 设为 `false` 并重启即可（第 1 条判定），无需等待版本更新。
 
 ## 六、拦截点明细
 
